@@ -1,0 +1,3 @@
+import { FormValues } from '../data'
+type Props = { values: FormValues & { neighborhood?: string }; onEdit: () => void }
+export default function ConditionSummary({ values, onEdit }: Props) { return <section className="summary"><div><p className="eyebrow">선택한 조건 · {values.neighborhood || '불당동'} 기준</p><h2>가까운 배움을 찾아봤어요</h2><div className="chips">{values.tool && <span>도구 · {values.tool}</span>}{values.level && <span>수준 · {values.level}</span>}{values.device && <span>기기 · {values.device}</span>}{values.time_slot && <span>시간 · {values.time_slot}</span>}</div></div><button className="outline press" onClick={onEdit}>조건 수정하기</button></section> }

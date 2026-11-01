@@ -1,0 +1,5 @@
+/* 모두의 AI 실험실 — 디자인 템플릿 "공공 신뢰" v1 (플랫폼 관리 파일: 고치면 되돌려집니다. 색·글꼴 조정은 overrides.css) */
+@import './fonts.css';
+@import './tokens.css';
+@import './base.css';
+@import './overrides.css';
