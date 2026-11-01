@@ -57,7 +57,6 @@ def init_db():
         add_column(conn, "users", "mentor_consent_confirmed", "INTEGER DEFAULT 0")
         conn.execute("UPDATE users SET mentor_verification_status='pending' WHERE role='mentor' AND (mentor_verification_status IS NULL OR mentor_verification_status='not_applicable')")
         conn.execute("UPDATE users SET mentor_verification_status='not_applicable' WHERE role='learner' AND mentor_verification_status IS NULL")
-        conn.execute("UPDATE users SET mentor_consent_confirmed=1 WHERE role='mentor' AND id IN (SELECT mentor_user_id FROM candidates WHERE consent_confirmed=1 AND mentor_user_id IS NOT NULL)")
         user_rows = conn.execute("SELECT id, nickname FROM users WHERE nickname_key IS NULL OR nickname_key = ''").fetchall()
         for user_row in user_rows:
             conn.execute("UPDATE users SET nickname_key=? WHERE id=?", (normalize_nickname(user_row["nickname"]), user_row["id"]))
@@ -68,6 +67,7 @@ def init_db():
         add_column(conn, "candidates", "distance", "TEXT DEFAULT '도보 10분'")
         add_column(conn, "candidates", "neighborhood", "TEXT DEFAULT '불당동'")
         add_column(conn, "candidates", "mentor_user_id", "INTEGER")
+        conn.execute("UPDATE users SET mentor_consent_confirmed=1 WHERE role='mentor' AND id IN (SELECT mentor_user_id FROM candidates WHERE consent_confirmed=1 AND mentor_user_id IS NOT NULL)")
         add_column(conn, "candidates", "consent_confirmed", "INTEGER DEFAULT 0")
         add_column(conn, "candidates", "verification_status", "TEXT DEFAULT 'pending'")
         add_column(conn, "candidates", "facility", "TEXT DEFAULT ''")
