@@ -66,13 +66,13 @@ def init_db():
             pass
         add_column(conn, "candidates", "distance", "TEXT DEFAULT '도보 10분'")
         add_column(conn, "candidates", "neighborhood", "TEXT DEFAULT '불당동'")
-        add_column(conn, "candidates", "mentor_user_id", "INTEGER")
-        conn.execute("UPDATE users SET mentor_consent_confirmed=1 WHERE role='mentor' AND id IN (SELECT mentor_user_id FROM candidates WHERE consent_confirmed=1 AND mentor_user_id IS NOT NULL)")
+        add_column(conn, "candidates", "mentor_user_id", "INTEGER")       
         add_column(conn, "candidates", "consent_confirmed", "INTEGER DEFAULT 0")
         add_column(conn, "candidates", "verification_status", "TEXT DEFAULT 'pending'")
         add_column(conn, "candidates", "facility", "TEXT DEFAULT ''")
         add_column(conn, "candidates", "operating_hours", "TEXT DEFAULT ''")
         add_column(conn, "candidates", "usage_procedure", "TEXT DEFAULT ''")
+        conn.execute("UPDATE users SET mentor_consent_confirmed=1 WHERE role='mentor' AND id IN (SELECT mentor_user_id FROM candidates WHERE consent_confirmed=1 AND mentor_user_id IS NOT NULL)")
         # 기존 appointment_note는 이전 버전 호환을 위해 남아 있을 수 있으나 더 이상 생성하거나 사용하지 않습니다.
         add_column(conn, "learning_requests", "learner_note", "TEXT DEFAULT ''")
         add_column(conn, "learning_requests", "mentor_note", "TEXT DEFAULT ''")
