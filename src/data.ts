@@ -1,6 +1,9 @@
-export type FormValues = { tool: string; course_name?: string; level: string; device: string; time_slot: string; keyword?: string }
+export type FormValues = { tool: string; course_name?: string; level: string; devices: string[]; time_slots: string[]; neighborhoods: string[]; keyword?: string }
 export type User = { id: number; nickname: string; role: 'learner' | 'mentor' }
-export type Candidate = { id: number; kind: 'mentor' | 'space'; name: string; tools: string[]; levels: string[]; devices: string[]; regions: string[]; times: string[]; official_url: string; source: string; source_date: string; description: string; score: number; reason: string; distance: string; neighborhood: string; consent_confirmed: boolean; verification_status: 'pending' | 'verified' | 'not_applicable'; facility?: string; operating_hours?: string; usage_procedure?: string }
+export type MatchTier = 'match' | 'partial' | 'miss'
+export type MatchDetailField = { tier: MatchTier; label: string }
+export type MatchDetail = { tool?: MatchDetailField; level?: MatchDetailField; device: MatchDetailField; time: MatchDetailField; neighborhood: MatchDetailField; keyword?: MatchDetailField }
+export type Candidate = { id: number; kind: 'mentor' | 'space'; name: string; tools: string[]; levels: string[]; devices: string[]; regions: string[]; times: string[]; official_url: string; source: string; source_date: string; description: string; score: number; match_percent: number | null; match_detail: MatchDetail | Record<string, never>; reason: string; distance: string; neighborhood: string; neighborhoods: string[]; consent_confirmed: boolean; verification_status: 'pending' | 'verified' | 'not_applicable'; facility?: string; operating_hours?: string; usage_procedure?: string; lat?: number; lng?: number; topics?: string[] }
 export type ResultData = { request_id: number; request: FormValues & { neighborhood: string }; results: { mentor: Candidate[]; space: Candidate[] } }
 export type Purpose = { label: string; tool: string; subtopics: { label: string; example: string }[] }
 export const purposes: Purpose[] = [
