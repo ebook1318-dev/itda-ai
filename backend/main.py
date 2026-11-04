@@ -5,7 +5,7 @@ import re
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 from backend.settings import TEAM_PASSWORD
-DB_PATH = "/workspace/data/app.db"
+DB_PATH = os.environ.get("DB_PATH") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "app.db")
 NEIGHBORHOOD = "불당동"
 # 동 이름 → 대략적인 중심 좌표(위도, 경도). 정확한 건물 좌표가 아니라 동 단위 근사치입니다.
 # (이 서버에서는 지오코딩 API를 쓸 수 없어, 공개적으로 알려진 천안시 동별 대략 위치를 사용했습니다.
