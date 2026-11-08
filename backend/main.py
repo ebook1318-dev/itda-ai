@@ -312,6 +312,37 @@ def restore_default_candidates(conn):
             conn.execute("""UPDATE candidates SET tools=?, levels=?, devices=?, regions=?, times=?, official_url=?, source=?, source_date=?, description=?, distance=?, neighborhood=?, consent_confirmed=?, verification_status=?, facility=?, operating_hours=?, usage_procedure=? WHERE id=?""", (*values, existing["id"]))
         else:
             conn.execute("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,consent_confirmed,verification_status,facility,operating_hours,usage_procedure) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", row)
+    # Render 무료 요금제는 재배포뿐 아니라 "잠자기→깨어나기"만으로도 임시 디스크가 초기화될 수 있습니다.
+    # 데모가 항상 작동하도록, 실제로 가입했던 멘토 5명의 정보(2026-11-03 기준 실제 입력값)를
+    # 공간 데이터와 같은 방식으로 코드에 고정해 둡니다. 비밀번호는 모두 공통 기본값으로 설정하며,
+    # 멘토가 같은 닉네임으로 직접 재가입하면(비밀번호를 직접 정하면) 그 계정을 그대로 쓰고
+    # 확인(verified) 상태만 자동으로 맞춰줍니다.
+    DEFAULT_MENTOR_PASSWORD = "itda2026"
+    mentor_rows = [
+        ("챗지피티쌤", ["ChatGPT"], ["스마트폰"], ["평일 오전", "평일 오후"], ["불당동", "백석동"], ["안내문 쓰기", "회의·학습 정리"]),
+        ("영상노트", ["캡컷"], ["스마트폰", "태블릿"], ["평일 저녁", "주말 오전"], ["쌍용동", "성정동"], ["사진 꾸미기", "짧은 영상 만들기"]),
+        ("캔바장인", ["캔바"], ["노트북"], ["주말 오후"], ["두정동", "백석동"], ["행사 홍보물", "카드뉴스"]),
+        ("자소서멘토", ["ChatGPT"], ["스마트폰", "노트북"], ["평일 오전"], ["신부동", "봉명동"], ["자기소개·지원 글", "발표자료"]),
+        ("자막요정", ["캡컷"], ["스마트폰"], ["평일 저녁", "주말 오후"], ["대흥동", "원성동"], ["자막 넣기", "짧은 영상 만들기"]),
+    ]
+    mentor_source, mentor_source_date = "데모용 기본 멘토 (재배포되어도 유지)", "2026-11-08"
+    for nickname, tools, devices, times, neighborhoods, topics in mentor_rows:
+        nickname_key = normalize_nickname(nickname)
+        conn.execute("""INSERT OR IGNORE INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed)
+            VALUES (?,?,?,?,?,?)""", (nickname, nickname_key, hashlib.sha256(DEFAULT_MENTOR_PASSWORD.encode()).hexdigest(), "mentor", "verified", 1))
+        user = conn.execute("SELECT id, role FROM users WHERE nickname_key=?", (nickname_key,)).fetchone()
+        if not user or user["role"] != "mentor":
+            continue
+        exists = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=?", (user["id"],)).fetchone()
+        if not exists:
+            conn.execute("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,topics,mentor_user_id,consent_confirmed,verification_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                "mentor", nickname, ",".join(tools), "입문,초급,중급", ",".join(devices), "천안시", ",".join(times),
+                "", mentor_source, mentor_source_date, "수강 전 공식 안내 페이지에서 운영 정보를 확인해 주세요.",
+                "거리 정보는 공식 안내에서 확인", ",".join(neighborhoods), ",".join(topics), user["id"], 1, "verified"
+            ))
+        # 데모 안정성을 위해, 계정이 어떤 경로로 생겼든(하드코딩/재가입 모두) 확인 상태만큼은 항상 맞춰줍니다.
+        conn.execute("UPDATE users SET mentor_verification_status='verified', mentor_consent_confirmed=1 WHERE id=?", (user["id"],))
 def add_sample_candidates(conn):
     source = "임시 샘플 데이터 (실제 확인 필요)"
     source_date = "2026-11-03"
