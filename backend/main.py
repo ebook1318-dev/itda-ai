@@ -605,6 +605,25 @@ def generate_ai_reasons(items, request):
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
         req = urllib.request.Request(
+                        "https://api.anthropic.com/v1/messages",
+            data=body,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["content"][0]["text"].strip()
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        for item, line in zip(items, lines):
+            cleaned = re.sub(r"^\d+\.\s*", "", line)
+            if cleaned:
+                item["ai_reason"] = cleaned
+    except Exception:
+        pass
 @app.get("/api/health")
 def health():
     return {"ok": True}
