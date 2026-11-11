@@ -577,6 +577,34 @@ def candidate_item(row, request=None):
     area_label = item["neighborhoods"][0] if item["neighborhoods"] else NEIGHBORHOOD
     item["reason"] = " · ".join(matches) or f"{area_label} 인근에서 공식 안내를 확인할 수 있는 후보입니다"
     return item
+    # Claude(Anthropic) API 설정. 환경변수가 없으면 AI 설명 기능은 자동으로 꺼지고,
+# 기존 규칙 기반 reason만 사용됩니다 (서비스가 멈추지 않도록 하기 위함).
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-5-5")
+def generate_ai_reasons(items, request):
+    """추천 후보들의 매칭 사유(규칙 기반)를 Claude로 더 친근한 한국어 문장으로 다시 써줍니다.
+    실제 추천 순위·점수는 바꾸지 않고, 설명 문구(ai_reason)만 추가합니다.
+    API 키가 없거나 호출이 실패하면 조용히 건너뛰어 기존 reason을 그대로 씁니다."""
+    if not ANTHROPIC_API_KEY or not items:
+        return
+    try:
+        candidates_text = "\n".join(
+            f"{i+1}. {item['name']} ({'멘토' if item['kind'] == 'mentor' else '공간'}) - 일치 항목: {item['reason']}"
+            for i, item in enumerate(items)
+        )
+        prompt = (
+            "다음은 학습자의 요청과 추천 후보 목록입니다. 각 후보마다 왜 추천되었는지를 "
+            "한국어 한 문장으로, 친근하고 구체적으로 다시 설명해 주세요.\n"
+            f"학습자가 원하는 것: 도구={request.tool}, 수준={request.level}\n"
+            f"후보 목록:\n{candidates_text}\n\n"
+            "반드시 '번호. 설명' 형식으로, 후보 개수만큼 한 줄씩만 답하세요. 다른 말은 쓰지 마세요."
+        )
+        body = json.dumps({
+            "model": ANTHROPIC_MODEL,
+            "max_tokens": 400,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+        req = urllib.request.Request(
 @app.get("/api/health")
 def health():
     return {"ok": True}
@@ -625,6 +653,8 @@ def recommendations(request: RecommendationRequest):
         result["space"].extend(candidate_item(row, request) for row in space_rows if row["id"] not in seen)
     result["mentor"] = result["mentor"][:2]
     result["space"] = result["space"][:3]
+    generate_ai_reasons(result["mentor"], request)
+    generate_ai_reasons(result["space"], request)
     return {"request_id": cursor.lastrowid, "request": {**request.model_dump(), "neighborhood": ", ".join(request.neighborhoods) or NEIGHBORHOOD}, "results": result}
 @app.post("/api/learning-requests")
 def create_learning_request(data: LearningRequestInput):
