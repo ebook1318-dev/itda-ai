@@ -18,7 +18,6 @@ function MatchBadge({ percent }: { percent: number | null }) {
 function MetaChips({ item }: { item: Candidate }) {
   const detail = item.match_detail
   if (!detail || !('device' in detail)) return null
-  // 공간(도서관·학습관 등)은 특정 도구·수준을 가르치지 않는 장소라, 도구·수준 배지는 멘토에게만 보여줍니다.
   const rows: { key: keyof typeof detail; label: string }[] = item.kind === 'space'
     ? [{ key: 'device', label: '기기' }, { key: 'time', label: '시간' }, { key: 'neighborhood', label: '동' }]
     : [{ key: 'tool', label: '도구' }, { key: 'keyword', label: '학습내용' }, { key: 'level', label: '수준' }, { key: 'device', label: '기기' }, { key: 'time', label: '시간' }, { key: 'neighborhood', label: '동' }]
@@ -28,6 +27,15 @@ function MetaChips({ item }: { item: Candidate }) {
     const tier = row.key === 'keyword' && field.tier === 'miss' ? 'neutral' : field.tier
     return <span className={`meta-item ${tier}`} key={row.key}><span className="dot"></span>{row.label} · {field.label}</span>
   })}</div>
+}
+function RecommendReason({ item }: { item: Candidate }) {
+  if (item.ai_reason) {
+    return <p className="reason ai-reason"><span className="ai-badge">✨ AI 설명</span>{item.ai_reason}</p>
+  }
+  if (item.reason) {
+    return <p className="reason">{item.reason}</p>
+  }
+  return null
 }
 function CandidateDetails({ item }: { item: Candidate }) {
   if (item.kind === 'space') return <dl className="candidate-details space-details">
@@ -67,6 +75,7 @@ export default function RecommendationList({ title, items, selected, onSelect, o
         return <article className={`candidate ${item.kind} ${chosen ? 'chosen' : ''}`} key={item.id}>
           <div className="candidate-top"><h3>{item.name}</h3><MatchBadge percent={item.match_percent}/></div>
           <MetaChips item={item}/>
+          <RecommendReason item={item}/>
           <CandidateDetails item={item}/>
           <div className="source"><span>출처 · {item.source}</span><span>기준일 · {item.source_date}</span></div>
           <div className="candidate-actions"><button className={chosen ? 'primary press' : 'outline press'} onClick={() => onSelect(item)}>{chosen ? '선택됨' : `${isSpace ? '공간' : '멘토'} 선택`}</button></div>
