@@ -91,3 +91,15 @@
 .accuracy-result th, .accuracy-result td { padding:var(--space-2); border-bottom:var(--border-width) solid var(--color-border); text-align:left; vertical-align:top; }
 .accuracy-result th { color:var(--color-muted); font-size:var(--text-xs); }
 .accuracy-result td small { color:var(--color-muted); font-weight:400; }
+/* 가입: 개인정보 수집·이용 안내 */
+.privacy-notice { display:grid; gap:var(--space-2); padding:var(--space-3); border:var(--border-width) solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface-2); font-size:var(--text-sm); }
+.privacy-notice ul { margin:0; padding-left:1.2em; color:var(--color-text-2); display:grid; gap:2px; }
+.auth-card .privacy-notice .consent-row { background:var(--color-surface); }
+/* 회원 탈퇴 */
+.withdraw-section { margin-bottom:var(--space-8); }
+.withdraw-section .help { margin:var(--space-3) 0; }
+.withdraw-form { display:grid; gap:var(--space-2); margin-top:var(--space-3); }
+.withdraw-form label { display:grid; gap:var(--space-1); font-weight:700; }
+.withdraw-form input { min-height:var(--control-h); padding:0 var(--space-3); border:var(--border-width) solid var(--color-border-strong); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-text); }
+.outline.danger { color:var(--color-danger); border-color:var(--color-danger); }
+.primary.danger-fill { background:var(--color-danger); border-color:var(--color-danger); }

@@ -462,6 +462,10 @@ def init_db():
         add_column(conn, "users", "nickname_key", "TEXT")
         add_column(conn, "users", "mentor_verification_status", "TEXT DEFAULT 'not_applicable'")
         add_column(conn, "users", "mentor_consent_confirmed", "INTEGER DEFAULT 0")
+        # 알림용 이메일(필수 수집, 다른 이용자에게 비공개)과 개인정보 동의 시각, 탈퇴 시각
+        add_column(conn, "users", "email", "TEXT")
+        add_column(conn, "users", "privacy_consent_at", "TEXT")
+        add_column(conn, "users", "withdrawn_at", "TEXT")
         add_column(conn, "candidates", "distance", "TEXT DEFAULT '거리 정보는 공식 안내에서 확인'")
         add_column(conn, "candidates", "neighborhood", "TEXT DEFAULT '불당동'")
         add_column(conn, "candidates", "mentor_user_id", "INTEGER")
@@ -497,6 +501,11 @@ def init_db():
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_nickname_key_unique ON users(nickname_key)")
         except sqlite3.IntegrityError:
             pass
+        # 같은 역할 안에서는 이메일 하나에 계정 하나 (멘토 1개 + 수강생 1개는 가능)
+        try:
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_role_email_unique ON users(role, email) WHERE email IS NOT NULL")
+        except sqlite3.IntegrityError:
+            pass
         conn.execute("DELETE FROM candidates WHERE source='임시 샘플 데이터 (실제 확인 필요)'")
         restore_default_candidates(conn)
 app = FastAPI()
@@ -505,6 +514,11 @@ class AuthInput(BaseModel):
     nickname: str
     password: str
     role: str
+    email: str = ""
+    privacy_consent: bool = False
+class WithdrawInput(BaseModel):
+    user_id: int
+    password: str
 class LoginInput(BaseModel):
     nickname: str
     password: str
@@ -556,6 +570,8 @@ class TeamStatusInput(BaseModel):
 def require_team_password(team_password: str | None):
     if not TEAM_PASSWORD or team_password is None or team_password.strip() != TEAM_PASSWORD:
         raise HTTPException(401, "팀 비밀번호가 맞지 않습니다.")
+EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
+WITHDRAWN_PREFIX = "탈퇴한 회원 "
 def public_user(row):
     return {"id": row["id"], "nickname": row["nickname"], "role": row["role"]}
 def contains_contact(text: str):
@@ -822,13 +838,49 @@ def signup(data: AuthInput):
     nickname_key = normalize_nickname(nickname)
     if len(nickname) < 2 or len(data.password) < 8 or data.role not in ("learner", "mentor"):
         raise HTTPException(400, "닉네임·비밀번호·역할을 다시 확인해 주세요. 비밀번호는 8자리 이상이어야 합니다.")
+    if nickname.startswith(WITHDRAWN_PREFIX):
+        raise HTTPException(400, "사용할 수 없는 닉네임입니다.")
+    email = data.email.strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email) or len(email) > 254:
+        raise HTTPException(400, "알림을 받을 이메일 주소를 정확히 입력해 주세요.")
+    if not data.privacy_consent:
+        raise HTTPException(400, "개인정보 수집·이용에 동의해야 가입할 수 있습니다.")
+    role_label = "멘토" if data.role == "mentor" else "수강생"
     with get_db() as conn:
+        if conn.execute("SELECT id FROM users WHERE role=? AND email=?", (data.role, email)).fetchone():
+            raise HTTPException(409, f"이 이메일로 가입한 {role_label} 계정이 이미 있습니다.")
         try:
-            cursor = conn.execute("INSERT INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed) VALUES (?,?,?,?,?,?)", (nickname, nickname_key, hashlib.sha256(data.password.encode()).hexdigest(), data.role, 'pending' if data.role == 'mentor' else 'not_applicable', 0))
+            cursor = conn.execute("INSERT INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed,email,privacy_consent_at) VALUES (?,?,?,?,?,?,?,?)", (nickname, nickname_key, hashlib.sha256(data.password.encode()).hexdigest(), data.role, 'pending' if data.role == 'mentor' else 'not_applicable', 0, email, time.strftime("%Y-%m-%d %H:%M:%S")))
             row = conn.execute("SELECT * FROM users WHERE id=?", (cursor.lastrowid,)).fetchone()
         except sqlite3.IntegrityError:
             raise HTTPException(409, "이미 사용 중인 닉네임입니다.")
     return public_user(row)
+@app.post("/api/account/withdraw")
+def withdraw(data: WithdrawInput):
+    """회원 탈퇴: 이메일·비밀번호는 즉시 삭제하고 닉네임은 익명으로 바꿉니다.
+    요청·후기·쪽지 기록은 상대방 화면에서 갑자기 사라지지 않도록 '탈퇴한 회원'으로 남깁니다."""
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id=? AND withdrawn_at IS NULL", (data.user_id,)).fetchone()
+        if not user or user["password_hash"] != hashlib.sha256(data.password.encode()).hexdigest():
+            raise HTTPException(401, "비밀번호를 다시 확인해 주세요.")
+        anon = f"{WITHDRAWN_PREFIX}{user['id']}"
+        unusable = "withdrawn:" + hashlib.sha256(os.urandom(32)).hexdigest()  # 어떤 비밀번호로도 로그인 불가
+        statements = [
+            ("UPDATE users SET nickname=?, nickname_key=?, password_hash=?, email=NULL, privacy_consent_at=NULL, withdrawn_at=?, mentor_consent_confirmed=0 WHERE id=?",
+             (anon, normalize_nickname(anon), unusable, time.strftime("%Y-%m-%d %H:%M:%S"), user["id"])),
+            ("DELETE FROM saved_candidates WHERE user_id=?", (user["id"],)),
+            ("UPDATE learning_requests SET status='cancelled' WHERE user_id=? AND status='pending'", (user["id"],)),
+        ]
+        if user["role"] == "mentor":
+            mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=?", (user["id"],)).fetchone()
+            statements.append(("UPDATE users SET mentor_verification_status='withdrawn' WHERE id=?", (user["id"],)))
+            if mentor:
+                statements += [
+                    ("UPDATE candidates SET name=?, intro='', consent_confirmed=0, verification_status='withdrawn' WHERE id=?", ("탈퇴한 멘토", mentor["id"])),
+                    ("UPDATE learning_requests SET status='cancelled' WHERE mentor_id=? AND status='pending'", (mentor["id"],)),
+                ]
+        run_batch(conn, statements)
+    return {"ok": True}
 @app.post("/api/auth/login")
 def login(data: LoginInput):
     nickname_key = normalize_nickname(data.nickname)
@@ -957,7 +1009,7 @@ def team_mentors(x_team_password: str | None = Header(default=None)):
         rows = conn.execute("""SELECT u.id, u.nickname, u.mentor_verification_status, u.mentor_consent_confirmed,
             (SELECT c.tools FROM candidates c WHERE c.mentor_user_id=u.id ORDER BY c.id DESC LIMIT 1) AS tools,
             (SELECT c.times FROM candidates c WHERE c.mentor_user_id=u.id ORDER BY c.id DESC LIMIT 1) AS times
-            FROM users u WHERE u.role='mentor' ORDER BY u.created_at DESC""").fetchall()
+            FROM users u WHERE u.role='mentor' AND u.withdrawn_at IS NULL ORDER BY u.created_at DESC""").fetchall()
     return [{**dict(row), "tools": as_list(row["tools"] or ""), "times": as_list(row["times"] or ""), "consent_confirmed": bool(row["mentor_consent_confirmed"] or 0)} for row in rows]
 @app.put("/api/team/mentors/{user_id}/status")
 def update_mentor_status(user_id: int, data: TeamStatusInput, x_team_password: str | None = Header(default=None)):
@@ -983,7 +1035,7 @@ def mentor_requests(user_id: int):
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (user_id,)).fetchone()
         if not mentor:
             return []
-        rows = conn.execute("""SELECT lr.*, u.nickname AS learner_name, s.name AS space_name
+        rows = conn.execute("""SELECT lr.*, CASE WHEN u.withdrawn_at IS NOT NULL THEN '탈퇴한 회원' ELSE u.nickname END AS learner_name, s.name AS space_name
             FROM learning_requests lr JOIN users u ON u.id=lr.user_id LEFT JOIN candidates s ON s.id=lr.space_id
             WHERE lr.mentor_id=? ORDER BY lr.id DESC""", (mentor["id"],)).fetchall()
     return [{**dict(row), "devices": as_list(row["devices"] or ""), "time_slots": as_list(row["time_slots"] or ""), "neighborhoods": as_list(row["neighborhoods"] or "")} for row in rows]
@@ -1046,7 +1098,7 @@ def mentor_reviews(user_id: int):
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (user_id,)).fetchone()
         if not mentor:
             return []
-        rows = conn.execute("""SELECT r.id, r.content, r.created_at, u.nickname AS learner_name
+        rows = conn.execute("""SELECT r.id, r.content, r.created_at, CASE WHEN u.withdrawn_at IS NOT NULL THEN '탈퇴한 회원' ELSE u.nickname END AS learner_name
             FROM reviews r JOIN users u ON u.id=r.user_id
             WHERE r.candidate_id=? ORDER BY r.id DESC""", (mentor["id"],)).fetchall()
     return [dict(row) for row in rows]
