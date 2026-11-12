@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import hashlib
+import hmac
+import base64
 import re
 import json
 import urllib.request
@@ -65,6 +67,28 @@ def as_list(value: str):
     return [item.strip() for item in value.split(",") if item.strip()]
 def normalize_nickname(nickname: str):
     return " ".join(nickname.strip().split()).casefold()
+# 비밀번호 보관: PBKDF2-SHA256 + 계정마다 다른 무작위 salt.
+# (예전 방식인 SHA-256 한 번 해시는 유출 시 쉽게 풀리므로, 기존 계정은 다음 로그인 때 자동으로 새 방식으로 바꿉니다.)
+# 반복 횟수는 Render 무료 서버(CPU 0.1개)에서도 로그인이 1초 안팎이 되도록 정했습니다.
+PBKDF2_ITERATIONS = int(os.environ.get("PBKDF2_ITERATIONS") or 200_000)
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${base64.b64encode(salt).decode()}${base64.b64encode(digest).decode()}"
+def verify_password(password: str, stored: str):
+    """(맞는지, 새 방식으로 다시 저장해야 하는지)를 돌려줍니다."""
+    if not stored:
+        return False, False
+    if stored.startswith("pbkdf2_sha256$"):
+        try:
+            _, iterations, salt, digest = stored.split("$")
+            check = hashlib.pbkdf2_hmac("sha256", password.encode(), base64.b64decode(salt), int(iterations))
+            return hmac.compare_digest(check, base64.b64decode(digest)), int(iterations) != PBKDF2_ITERATIONS
+        except (ValueError, TypeError):
+            return False, False
+    if len(stored) == 64:  # 예전 방식(SHA-256)
+        return hmac.compare_digest(hashlib.sha256(password.encode()).hexdigest(), stored), True
+    return False, False  # 탈퇴 계정 등
 def run_batch(conn, statements):
     """여러 문장을 한 번에 실행합니다. Turso에서는 한 번의 요청으로 묶어 보내 시작 시간을 줄입니다."""
     if not statements:
@@ -369,8 +393,9 @@ def restore_default_candidates(conn):
     # 예전 출처 문구로 저장된 기본 멘토도 새 문구로 바꿔 줍니다.
     conn.execute("UPDATE candidates SET source=? WHERE kind='mentor' AND source='데모용 기본 멘토 (재배포되어도 유지)'", (mentor_source,))
     keys = [normalize_nickname(r[0]) for r in mentor_rows]
+    default_hash = hash_password(DEFAULT_MENTOR_PASSWORD)  # 이미 있는 계정은 INSERT OR IGNORE라 바뀌지 않음
     run_batch(conn, [("""INSERT OR IGNORE INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed)
-            VALUES (?,?,?,?,?,?)""", (r[0], key, hashlib.sha256(DEFAULT_MENTOR_PASSWORD.encode()).hexdigest(), "mentor", "verified", 1)) for r, key in zip(mentor_rows, keys)])
+            VALUES (?,?,?,?,?,?)""", (r[0], key, default_hash, "mentor", "verified", 1)) for r, key in zip(mentor_rows, keys)])
     marks = ",".join("?" * len(keys))
     users_by_key = {u["nickname_key"]: u for u in conn.execute(f"SELECT id, role, nickname_key FROM users WHERE nickname_key IN ({marks})", keys).fetchall()}
     user_ids = [u["id"] for u in users_by_key.values()]
@@ -415,7 +440,7 @@ def add_sample_candidates(conn):
     for nickname, password, tool, level, devices, times, neighborhoods, region, description in mentors:
         nickname_key = normalize_nickname(nickname)
         conn.execute("""INSERT OR IGNORE INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed)
-            VALUES (?,?,?,?,?,?)""", (nickname, nickname_key, hashlib.sha256(password.encode()).hexdigest(), "mentor", "pending", 1))
+            VALUES (?,?,?,?,?,?)""", (nickname, nickname_key, hash_password(password), "mentor", "pending", 1))
         user = conn.execute("SELECT id, role FROM users WHERE nickname_key=?", (nickname_key,)).fetchone()
         if user and user["role"] == "mentor":
             exists = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=?", (user["id"],)).fetchone()
@@ -850,7 +875,7 @@ def signup(data: AuthInput):
         if conn.execute("SELECT id FROM users WHERE role=? AND email=?", (data.role, email)).fetchone():
             raise HTTPException(409, f"이 이메일로 가입한 {role_label} 계정이 이미 있습니다.")
         try:
-            cursor = conn.execute("INSERT INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed,email,privacy_consent_at) VALUES (?,?,?,?,?,?,?,?)", (nickname, nickname_key, hashlib.sha256(data.password.encode()).hexdigest(), data.role, 'pending' if data.role == 'mentor' else 'not_applicable', 0, email, time.strftime("%Y-%m-%d %H:%M:%S")))
+            cursor = conn.execute("INSERT INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed,email,privacy_consent_at) VALUES (?,?,?,?,?,?,?,?)", (nickname, nickname_key, hash_password(data.password), data.role, 'pending' if data.role == 'mentor' else 'not_applicable', 0, email, time.strftime("%Y-%m-%d %H:%M:%S")))
             row = conn.execute("SELECT * FROM users WHERE id=?", (cursor.lastrowid,)).fetchone()
         except sqlite3.IntegrityError:
             raise HTTPException(409, "이미 사용 중인 닉네임입니다.")
@@ -861,7 +886,7 @@ def withdraw(data: WithdrawInput):
     요청·후기·쪽지 기록은 상대방 화면에서 갑자기 사라지지 않도록 '탈퇴한 회원'으로 남깁니다."""
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE id=? AND withdrawn_at IS NULL", (data.user_id,)).fetchone()
-        if not user or user["password_hash"] != hashlib.sha256(data.password.encode()).hexdigest():
+        if not user or not verify_password(data.password, user["password_hash"])[0]:
             raise HTTPException(401, "비밀번호를 다시 확인해 주세요.")
         anon = f"{WITHDRAWN_PREFIX}{user['id']}"
         unusable = "withdrawn:" + hashlib.sha256(os.urandom(32)).hexdigest()  # 어떤 비밀번호로도 로그인 불가
@@ -885,9 +910,12 @@ def withdraw(data: WithdrawInput):
 def login(data: LoginInput):
     nickname_key = normalize_nickname(data.nickname)
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM users WHERE nickname_key=? AND password_hash=? AND role=?", (nickname_key, hashlib.sha256(data.password.encode()).hexdigest(), data.role)).fetchone()
-    if not row:
-        raise HTTPException(401, "닉네임·비밀번호·역할을 확인해 주세요.")
+        row = conn.execute("SELECT * FROM users WHERE nickname_key=? AND role=? AND withdrawn_at IS NULL", (nickname_key, data.role)).fetchone()
+        ok, needs_upgrade = verify_password(data.password, row["password_hash"]) if row else (False, False)
+        if not ok:
+            raise HTTPException(401, "닉네임·비밀번호·역할을 확인해 주세요.")
+        if needs_upgrade:  # 예전 방식(SHA-256)으로 저장된 비밀번호를 새 방식으로 바꿔 저장
+            conn.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(data.password), row["id"]))
     return public_user(row)
 @app.post("/api/recommendations")
 def recommendations(request: RecommendationRequest):

@@ -103,3 +103,18 @@
 .withdraw-form input { min-height:var(--control-h); padding:0 var(--space-3); border:var(--border-width) solid var(--color-border-strong); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-text); }
 .outline.danger { color:var(--color-danger); border-color:var(--color-danger); }
 .primary.danger-fill { background:var(--color-danger); border-color:var(--color-danger); }
+/* 개인정보처리방침 */
+.site-footer { display:flex; flex-wrap:wrap; justify-content:center; gap:var(--space-1) var(--space-3); margin:var(--space-6) 0 var(--space-4); color:var(--color-muted); font-size:var(--text-xs); }
+.site-footer a, .policy-link { color:var(--color-text-2); font-weight:700; }
+.policy-link { justify-self:start; font-size:var(--text-xs); }
+.privacy-page { display:grid; gap:var(--space-4); padding-block:var(--space-4) var(--space-8); }
+.privacy-page article { max-width:72ch; line-height:1.7; }
+.privacy-page h1 { margin:0; font:700 var(--text-3xl)/var(--leading-tight) var(--font-display); }
+.privacy-page h2 { margin:var(--space-5) 0 var(--space-2); font:700 var(--text-lg)/var(--leading-tight) var(--font-display); }
+.privacy-page ul { margin:0; padding-left:1.2em; }
+.privacy-date { color:var(--color-muted); font-size:var(--text-sm); }
+.privacy-page > button { justify-self:start; }
+.privacy-table { width:100%; min-width:560px; border-collapse:collapse; font-size:var(--text-sm); }
+.privacy-table th, .privacy-table td { padding:var(--space-2); border-bottom:var(--border-width) solid var(--color-border); text-align:left; vertical-align:top; }
+.privacy-table th { color:var(--color-muted); font-size:var(--text-xs); }
+.privacy-page > *, .privacy-page article { min-width:0; max-width:100%; }
