@@ -6,6 +6,7 @@ type Props = {
   onSelect: (candidate: Candidate) => void
   onSkip?: () => void
   skipped?: boolean
+  aiRanked?: boolean
 }
 function tierFromPercent(percent: number): MatchTier {
   return percent >= 70 ? 'match' : percent >= 45 ? 'partial' : 'miss'
@@ -18,6 +19,7 @@ function MatchBadge({ percent }: { percent: number | null }) {
 function MetaChips({ item }: { item: Candidate }) {
   const detail = item.match_detail
   if (!detail || !('device' in detail)) return null
+  // 공간(도서관·학습관 등)은 특정 도구·수준을 가르치지 않는 장소라, 도구·수준 배지는 멘토에게만 보여줍니다.
   const rows: { key: keyof typeof detail; label: string }[] = item.kind === 'space'
     ? [{ key: 'device', label: '기기' }, { key: 'time', label: '시간' }, { key: 'neighborhood', label: '동' }]
     : [{ key: 'tool', label: '도구' }, { key: 'keyword', label: '학습내용' }, { key: 'level', label: '수준' }, { key: 'device', label: '기기' }, { key: 'time', label: '시간' }, { key: 'neighborhood', label: '동' }]
@@ -30,7 +32,7 @@ function MetaChips({ item }: { item: Candidate }) {
 }
 function RecommendReason({ item }: { item: Candidate }) {
   if (item.ai_reason) {
-    return <p className="reason ai-reason"><span className="ai-badge">✨ AI 설명</span>{item.ai_reason}</p>
+    return <p className="reason ai-reason"><span className="ai-badge">✨ AI 추천 이유</span>{item.ai_reason}</p>
   }
   if (item.reason) {
     return <p className="reason">{item.reason}</p>
@@ -44,26 +46,29 @@ function CandidateDetails({ item }: { item: Candidate }) {
     <div><dt>이용 절차</dt><dd>{item.usage_procedure || '공식 안내에서 확인'}</dd></div>
   </dl>
   return <dl className="candidate-details mentor-details">
+    {item.intro && <div className="intro-detail"><dt>멘토 소개</dt><dd>{item.intro}</dd></div>}
     <div><dt>안내 가능 도구·수준</dt><dd>{item.tools.join(' · ')} / {item.levels.join(' · ')}</dd></div>
     {item.topics && item.topics.length > 0 && <div><dt>가르칠 수 있는 주제</dt><dd>{item.topics.join(' · ')}</dd></div>}
     <div><dt>가능 요일·시간</dt><dd>{item.times.join(' · ')}</dd></div>
     <div><dt>활동 지역</dt><dd>{item.regions.join(' · ')}</dd></div>
   </dl>
 }
-export default function RecommendationList({ title, items, selected, onSelect, onSkip, skipped }: Props) {
+export default function RecommendationList({ title, items, selected, onSelect, onSkip, skipped, aiRanked }: Props) {
   const kind = items[0]?.kind === 'space' ? 'space' : 'mentor'
   const isSpace = kind === 'space'
   const hasSelection = Boolean(selected && items.some(item => item.id === selected.id && item.kind === selected.kind))
   const effectiveDone = hasSelection || (isSpace && Boolean(skipped))
-  const orderedItems = [...items].sort((a, b) => {
-    const aChosen = a.id === selected?.id && a.kind === selected?.kind
-    const bChosen = b.id === selected?.id && b.kind === selected?.kind
+  // 서버가 정한 순서(AI 매칭 순서)를 그대로 유지하고, 선택한 후보만 맨 위로 올립니다.
+  const orderedItems = items.map((item, index) => ({ item, index })).sort((a, b) => {
+    const aChosen = a.item.id === selected?.id && a.item.kind === selected?.kind
+    const bChosen = b.item.id === selected?.id && b.item.kind === selected?.kind
     if (aChosen !== bChosen) return aChosen ? -1 : 1
-    return b.score - a.score
-  })
+    return a.index - b.index
+  }).map(entry => entry.item)
   const countLabel = isSpace ? '곳' : '명'
   return <section className={`result-section ${kind}-results`} aria-labelledby={`${title}-heading`}>
     <div className="section-head"><div><p className="eyebrow">우리동네 인근 {isSpace ? '공공 학습 공간' : '멘토'} 후보</p><h2 id={`${title}-heading`}>{title}</h2></div><span className="count">{items.length}{countLabel}</span></div>
+    {!isSpace && aiRanked && <p className="list-notice ai-notice">✨ 적어주신 배우고 싶은 내용을 AI가 멘토의 주제·소개글과 비교하고, 시간·동 조건까지 함께 보고 순서를 정했어요.</p>}
     {isSpace && <p className="list-notice">아래 공간은 추천 후보이며, 실제 이용 가능 여부는 공식 페이지에서 다시 확인해주세요.</p>}
     <div className="candidate-list">
       {!effectiveDone && (isSpace && onSkip
