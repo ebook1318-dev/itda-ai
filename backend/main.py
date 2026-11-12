@@ -8,7 +8,8 @@ import json
 import urllib.request
 import urllib.error
 import time
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
+import secrets
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from backend.settings import TEAM_PASSWORD
@@ -491,6 +492,12 @@ def init_db():
         add_column(conn, "users", "email", "TEXT")
         add_column(conn, "users", "privacy_consent_at", "TEXT")
         add_column(conn, "users", "withdrawn_at", "TEXT")
+        # 이메일 인증 (인증한 사람에게만 알림 메일을 보냄)
+        add_column(conn, "users", "email_verified_at", "TEXT")
+        add_column(conn, "users", "email_code_hash", "TEXT")
+        add_column(conn, "users", "email_code_expires", "REAL")
+        add_column(conn, "users", "email_code_sent_at", "REAL")
+        add_column(conn, "users", "email_code_attempts", "INTEGER DEFAULT 0")
         add_column(conn, "candidates", "distance", "TEXT DEFAULT '거리 정보는 공식 안내에서 확인'")
         add_column(conn, "candidates", "neighborhood", "TEXT DEFAULT '불당동'")
         add_column(conn, "candidates", "mentor_user_id", "INTEGER")
@@ -598,7 +605,11 @@ def require_team_password(team_password: str | None):
 EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 WITHDRAWN_PREFIX = "탈퇴한 회원 "
 def public_user(row):
-    return {"id": row["id"], "nickname": row["nickname"], "role": row["role"]}
+    keys = row.keys()
+    verified = bool(row["email_verified_at"]) if "email_verified_at" in keys else False
+    has_email = bool(row["email"]) if "email" in keys else False
+    return {"id": row["id"], "nickname": row["nickname"], "role": row["role"],
+            "email_verified": verified, "needs_email_verification": has_email and not verified and mail_enabled()}
 def contains_contact(text: str):
     """전화번호나 이메일이 들어 있는지 확인합니다 (약속 쪽지·멘토 소개글 공통)."""
     has_phone = bool(re.search(r"(?:0\d{1,2}[\s-]?)?\d{3,4}[\s-]?\d{4}", text))
@@ -854,11 +865,128 @@ def rank_mentors(mentor_items, request, use_ai=True, spaces=None):
         mark_ai_result(False)
         return matched + others, False, str(error)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 알림 메일 (Brevo)
+#  환경변수: BREVO_API_KEY, MAIL_FROM(Brevo에서 인증한 보내는 주소) — 둘 다 있어야 켜집니다.
+#           MAIL_FROM_NAME(선택, 기본 '배움잇다 AI'), SITE_URL(선택, 메일 속 바로가기 주소)
+#  없으면 메일은 조용히 건너뛰고 서비스는 그대로 동작합니다.
+#  원칙: 이메일 인증을 마친 사람에게만 보냅니다. 쪽지 내용·상대방 이메일은 메일에 넣지 않습니다.
+#        메일은 응답을 먼저 보낸 뒤 뒤에서(BackgroundTasks) 보내 화면이 기다리지 않게 합니다.
+# ──────────────────────────────────────────────────────────────────────────────
+BREVO_API_KEY = (os.environ.get("BREVO_API_KEY") or "").strip()
+MAIL_FROM = (os.environ.get("MAIL_FROM") or "").strip()
+MAIL_FROM_NAME = (os.environ.get("MAIL_FROM_NAME") or "배움잇다 AI").strip()
+BREVO_API_URL = (os.environ.get("BREVO_API_URL") or "https://api.brevo.com/v3").strip().rstrip("/")
+SITE_URL = (os.environ.get("SITE_URL") or "https://itda-ai.onrender.com").strip().rstrip("/")
+CODE_TTL_SECONDS, CODE_RESEND_SECONDS, CODE_MAX_ATTEMPTS = 600, 60, 5
+
+def mail_enabled():
+    return bool(BREVO_API_KEY and MAIL_FROM)
+
+def send_mail(to: str, subject: str, text: str):
+    """메일 한 통을 보냅니다. 실패해도 예외를 밖으로 내지 않고 로그만 남깁니다. 성공하면 True."""
+    if not mail_enabled() or not to:
+        return False
+    html = "".join(f"<p>{line}</p>" if line else "<br>" for line in
+                   (part.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for part in text.split("\n")))
+    body = json.dumps({
+        "sender": {"name": MAIL_FROM_NAME, "email": MAIL_FROM},
+        "to": [{"email": to}],
+        "subject": subject,
+        "textContent": text,
+        "htmlContent": f"<div style=\"font-family:sans-serif;line-height:1.6\">{html}</div>",
+    }).encode("utf-8")
+    req = urllib.request.Request(f"{BREVO_API_URL}/smtp/email", data=body, method="POST", headers={
+        "api-key": BREVO_API_KEY, "content-type": "application/json", "accept": "application/json", "user-agent": "itda-ai/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+        return True
+    except urllib.error.HTTPError as error:
+        print(f"[MAIL] Brevo 오류 {error.code}: {error.read().decode('utf-8', 'replace')[:300]}", flush=True)
+    except Exception as error:
+        print(f"[MAIL] 발송 실패: {type(error).__name__}: {error}", flush=True)
+    return False
+
+MAIL_FOOTER = f"\n\n배움잇다 AI 바로가기: {SITE_URL}\n이 메일은 배움잇다 AI 알림 설정에 따라 자동으로 보내졌습니다. 회신하지 마세요."
+
+def notify_user(background: BackgroundTasks, user_id, subject: str, message: str):
+    """인증을 마친 회원에게만 알림 메일을 예약합니다."""
+    if not mail_enabled() or not user_id:
+        return
+    with get_db() as conn:
+        user = conn.execute("SELECT email, email_verified_at, withdrawn_at FROM users WHERE id=?", (user_id,)).fetchone()
+    if user and user["email"] and user["email_verified_at"] and not user["withdrawn_at"]:
+        background.add_task(send_mail, user["email"], f"[배움잇다 AI] {subject}", message + MAIL_FOOTER)
+
+def mentor_user_id(conn, candidate_id):
+    row = conn.execute("SELECT mentor_user_id FROM candidates WHERE id=?", (candidate_id,)).fetchone()
+    return row["mentor_user_id"] if row else None
+
+def display_name(conn, user_id):
+    row = conn.execute("SELECT nickname, withdrawn_at FROM users WHERE id=?", (user_id,)).fetchone()
+    return "탈퇴한 회원" if not row or row["withdrawn_at"] else row["nickname"]
+
+def hash_code(user_id, code):
+    return hashlib.sha256(f"{user_id}:{code}".encode()).hexdigest()
+
+def issue_email_code(conn, user, background: BackgroundTasks):
+    """6자리 인증코드를 만들어 메일로 보냅니다 (1분 안에 다시 요청하면 거절)."""
+    now = time.time()
+    if user["email_code_sent_at"] and now - user["email_code_sent_at"] < CODE_RESEND_SECONDS:
+        wait = int(CODE_RESEND_SECONDS - (now - user["email_code_sent_at"])) + 1
+        raise HTTPException(429, f"인증코드는 {wait}초 뒤에 다시 받을 수 있어요.")
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    conn.execute("UPDATE users SET email_code_hash=?, email_code_expires=?, email_code_sent_at=?, email_code_attempts=0 WHERE id=?",
+                 (hash_code(user["id"], code), now + CODE_TTL_SECONDS, now, user["id"]))
+    background.add_task(send_mail, user["email"], "[배움잇다 AI] 이메일 인증코드",
+                        f"{user['nickname']}님, 배움잇다 AI 이메일 인증코드입니다.\n\n인증코드: {code}\n\n10분 안에 화면에 입력해 주세요. "
+                        "인증을 마치면 매칭 요청·수락·쪽지 알림을 이 메일로 받을 수 있어요.\n본인이 요청하지 않았다면 이 메일은 무시하셔도 됩니다." + MAIL_FOOTER)
+
+class EmailCodeInput(BaseModel):
+    user_id: int
+    code: str = ""
+
+@app.post("/api/account/email/send-code")
+def send_email_code(data: EmailCodeInput, background: BackgroundTasks):
+    if not mail_enabled():
+        raise HTTPException(503, "메일 알림을 준비하고 있어요. 조금만 기다려 주세요.")
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id=? AND withdrawn_at IS NULL", (data.user_id,)).fetchone()
+        if not user or not user["email"]:
+            raise HTTPException(404, "회원 정보를 찾지 못했습니다.")
+        if user["email_verified_at"]:
+            return {"ok": True, "already_verified": True}
+        issue_email_code(conn, user, background)
+    return {"ok": True}
+
+@app.post("/api/account/email/verify")
+def verify_email_code(data: EmailCodeInput):
+    code = "".join(ch for ch in data.code if ch.isdigit())
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id=? AND withdrawn_at IS NULL", (data.user_id,)).fetchone()
+        if not user:
+            raise HTTPException(404, "회원 정보를 찾지 못했습니다.")
+        if user["email_verified_at"]:
+            return {"ok": True, "email_verified": True}
+        if not user["email_code_hash"] or (user["email_code_expires"] or 0) < time.time():
+            raise HTTPException(400, "인증코드가 없거나 시간이 지났어요. 코드를 다시 받아 주세요.")
+        attempts = (user["email_code_attempts"] or 0) + 1
+        if attempts > CODE_MAX_ATTEMPTS:
+            raise HTTPException(400, "인증코드를 5번 틀렸어요. 코드를 다시 받아 주세요.")
+        if not hmac.compare_digest(hash_code(user["id"], code), user["email_code_hash"]):
+            conn.execute("UPDATE users SET email_code_attempts=? WHERE id=?", (attempts, user["id"]))
+            left = CODE_MAX_ATTEMPTS - attempts
+            raise HTTPException(400, f"인증코드가 맞지 않아요. (남은 기회 {left}번)" if left > 0 else "인증코드를 5번 틀렸어요. 코드를 다시 받아 주세요.")
+        conn.execute("UPDATE users SET email_verified_at=?, email_code_hash=NULL, email_code_expires=NULL, email_code_attempts=0 WHERE id=?",
+                     (time.strftime("%Y-%m-%d %H:%M:%S"), user["id"]))
+    return {"ok": True, "email_verified": True}
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "db": db_backend()}
 @app.post("/api/auth/signup")
-def signup(data: AuthInput):
+def signup(data: AuthInput, background: BackgroundTasks):
     nickname = " ".join(data.nickname.strip().split())
     nickname_key = normalize_nickname(nickname)
     if len(nickname) < 2 or len(data.password) < 8 or data.role not in ("learner", "mentor"):
@@ -879,6 +1007,8 @@ def signup(data: AuthInput):
             row = conn.execute("SELECT * FROM users WHERE id=?", (cursor.lastrowid,)).fetchone()
         except sqlite3.IntegrityError:
             raise HTTPException(409, "이미 사용 중인 닉네임입니다.")
+        if mail_enabled():
+            issue_email_code(conn, row, background)
     return public_user(row)
 @app.post("/api/account/withdraw")
 def withdraw(data: WithdrawInput):
@@ -891,7 +1021,7 @@ def withdraw(data: WithdrawInput):
         anon = f"{WITHDRAWN_PREFIX}{user['id']}"
         unusable = "withdrawn:" + hashlib.sha256(os.urandom(32)).hexdigest()  # 어떤 비밀번호로도 로그인 불가
         statements = [
-            ("UPDATE users SET nickname=?, nickname_key=?, password_hash=?, email=NULL, privacy_consent_at=NULL, withdrawn_at=?, mentor_consent_confirmed=0 WHERE id=?",
+            ("UPDATE users SET nickname=?, nickname_key=?, password_hash=?, email=NULL, privacy_consent_at=NULL, email_verified_at=NULL, email_code_hash=NULL, email_code_expires=NULL, email_code_sent_at=NULL, withdrawn_at=?, mentor_consent_confirmed=0 WHERE id=?",
              (anon, normalize_nickname(anon), unusable, time.strftime("%Y-%m-%d %H:%M:%S"), user["id"])),
             ("DELETE FROM saved_candidates WHERE user_id=?", (user["id"],)),
             ("UPDATE learning_requests SET status='cancelled' WHERE user_id=? AND status='pending'", (user["id"],)),
@@ -942,7 +1072,7 @@ def recommendations(request: RecommendationRequest):
         "ranking": {"mentor": "ai" if ai_used else "rule"},
     }
 @app.post("/api/learning-requests")
-def create_learning_request(data: LearningRequestInput):
+def create_learning_request(data: LearningRequestInput, background: BackgroundTasks):
     with get_db() as conn:
         user = conn.execute("SELECT id FROM users WHERE id=? AND role='learner'", (data.user_id,)).fetchone()
         mentor = conn.execute("SELECT id FROM candidates WHERE id=? AND kind='mentor' AND verification_status='verified'", (data.mentor_id,)).fetchone()
@@ -959,6 +1089,9 @@ def create_learning_request(data: LearningRequestInput):
             raise HTTPException(400, "대기중인 멘토 요청이 있어 수락·거절·취소 전에는 새 멘토 요청을 보낼 수 없습니다.")
         cursor = conn.execute("""INSERT INTO learning_requests (user_id,mentor_id,space_id,tool,level,devices,time_slots,neighborhoods,keyword)
             VALUES (?,?,?,?,?,?,?,?,?)""", (data.user_id, data.mentor_id, data.space_id, data.tool, data.level, ",".join(data.devices), ",".join(data.time_slots), ",".join(data.neighborhoods), data.keyword))
+        learner, mentor_uid = display_name(conn, data.user_id), mentor_user_id(conn, data.mentor_id)
+    notify_user(background, mentor_uid, "새 학습 요청이 도착했어요",
+                f"{learner}님이 학습을 요청했어요.\n배움잇다 AI에 로그인해 요청 내용을 확인하고 수락 또는 거절해 주세요.")
     return {"id": cursor.lastrowid, "status": "pending"}
 @app.post("/api/learning-requests/{request_id}/complete")
 def complete_learning_request(request_id: int, data: LearningRequestInput):
@@ -1068,7 +1201,7 @@ def mentor_requests(user_id: int):
             WHERE lr.mentor_id=? ORDER BY lr.id DESC""", (mentor["id"],)).fetchall()
     return [{**dict(row), "devices": as_list(row["devices"] or ""), "time_slots": as_list(row["time_slots"] or ""), "neighborhoods": as_list(row["neighborhoods"] or "")} for row in rows]
 @app.post("/api/learning-requests/{request_id}/cancel")
-def cancel_learning_request(request_id: int, data: MentorRequestAction):
+def cancel_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks):
     with get_db() as conn:
         request = conn.execute("SELECT * FROM learning_requests WHERE id=? AND user_id=?", (request_id, data.user_id)).fetchone()
         if not request:
@@ -1076,9 +1209,11 @@ def cancel_learning_request(request_id: int, data: MentorRequestAction):
         if request["status"] != "pending":
             raise HTTPException(400, "대기중인 요청만 취소할 수 있습니다.")
         conn.execute("UPDATE learning_requests SET status='cancelled' WHERE id=?", (request_id,))
+        learner, mentor_uid = display_name(conn, request["user_id"]), mentor_user_id(conn, request["mentor_id"])
+    notify_user(background, mentor_uid, "학습 요청이 취소됐어요", f"{learner}님이 보낸 학습 요청을 취소했어요.")
     return {"ok": True, "status": "cancelled"}
 @app.post("/api/learning-requests/{request_id}/reject")
-def reject_learning_request(request_id: int, data: MentorRequestAction):
+def reject_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks):
     with get_db() as conn:
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (data.user_id,)).fetchone()
         request = conn.execute("SELECT * FROM learning_requests WHERE id=?", (request_id,)).fetchone()
@@ -1087,9 +1222,12 @@ def reject_learning_request(request_id: int, data: MentorRequestAction):
         if request["status"] != "pending":
             raise HTTPException(400, "대기중인 요청만 거절할 수 있습니다.")
         conn.execute("UPDATE learning_requests SET status='cancelled' WHERE id=?", (request_id,))
+        mentor_name = conn.execute("SELECT name FROM candidates WHERE id=?", (request["mentor_id"],)).fetchone()["name"]
+    notify_user(background, request["user_id"], "학습 요청이 수락되지 않았어요",
+                f"{mentor_name}님이 이번 학습 요청을 수락하지 못했어요.\n배움잇다 AI에서 다른 멘토를 찾아보세요.")
     return {"ok": True, "status": "cancelled"}
 @app.post("/api/learning-requests/{request_id}/confirm")
-def confirm_learning_request(request_id: int, data: MentorRequestAction):
+def confirm_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks):
     with get_db() as conn:
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (data.user_id,)).fetchone()
         request = conn.execute("SELECT * FROM learning_requests WHERE id=?", (request_id,)).fetchone()
@@ -1098,9 +1236,12 @@ def confirm_learning_request(request_id: int, data: MentorRequestAction):
         if request["status"] != "pending":
             raise HTTPException(400, "대기중인 요청만 수락할 수 있습니다.")
         conn.execute("UPDATE learning_requests SET status='confirmed' WHERE id=?", (request_id,))
+        mentor_name = conn.execute("SELECT name FROM candidates WHERE id=?", (request["mentor_id"],)).fetchone()["name"]
+    notify_user(background, request["user_id"], "멘토가 학습 요청을 수락했어요",
+                f"{mentor_name}님이 학습 요청을 수락했어요.\n배움잇다 AI의 '내 기록'에서 약속 쪽지로 만날 시간과 장소를 정해 보세요.")
     return {"ok": True, "status": "confirmed"}
 @app.put("/api/learning-requests/{request_id}/appointment-note")
-def update_appointment_note(request_id: int, data: AppointmentNoteInput):
+def update_appointment_note(request_id: int, data: AppointmentNoteInput, background: BackgroundTasks):
     note = data.note.strip()
     if len(note) > 200:
         raise HTTPException(400, "약속 쪽지는 200자 이내로 적어 주세요.")
@@ -1112,13 +1253,20 @@ def update_appointment_note(request_id: int, data: AppointmentNoteInput):
             raise HTTPException(400, "약속 메모에는 전화번호나 이메일 등 연락처를 적을 수 없습니다.")
         if request["user_id"] == data.user_id:
             note_column, time_column = "learner_note", "learner_note_updated_at"
+            recipient = mentor_user_id(conn, request["mentor_id"])
         else:
             mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND id=?", (data.user_id, request["mentor_id"])).fetchone()
             if not mentor:
                 raise HTTPException(403, "이 약속 메모를 수정할 권한이 없습니다.")
             note_column, time_column = "mentor_note", "mentor_note_updated_at"
+            recipient = request["user_id"]
+        changed = note and note != (request[note_column] or "")
         conn.execute(f"UPDATE learning_requests SET {note_column}=?, {time_column}=CURRENT_TIMESTAMP WHERE id=?", (note, request_id))
         saved = conn.execute("SELECT learner_note, mentor_note, learner_note_updated_at, mentor_note_updated_at FROM learning_requests WHERE id=?", (request_id,)).fetchone()
+        writer = display_name(conn, data.user_id)
+    if changed:
+        notify_user(background, recipient, "새 약속 쪽지가 도착했어요",
+                    f"{writer}님이 약속 쪽지를 남겼어요.\n배움잇다 AI에 로그인해 확인해 주세요.")
     return {"ok": True, **dict(saved)}
 @app.get("/api/mentor-reviews/{user_id}")
 def mentor_reviews(user_id: int):
@@ -1142,6 +1290,21 @@ def team_ai_check(x_team_password: str | None = Header(default=None)):
         return {"configured": bool(ANTHROPIC_API_KEY), "model": f"{ANTHROPIC_MODEL} · {'Anthropic 직접' if ai_provider() == 'anthropic' else '모두의 AI 실험실 게이트웨이'}", "ok": True, "error": None, "elapsed_ms": round((time.time() - started) * 1000)}
     except AIError as error:
         return {"configured": bool(ANTHROPIC_API_KEY), "model": f"{ANTHROPIC_MODEL} · {'Anthropic 직접' if ai_provider() == 'anthropic' else '모두의 AI 실험실 게이트웨이'}", "ok": False, "error": str(error), "elapsed_ms": round((time.time() - started) * 1000)}
+
+class MailTestInput(BaseModel):
+    to: str
+@app.post("/api/team/mail-test")
+def team_mail_test(data: MailTestInput, x_team_password: str | None = Header(default=None)):
+    """메일 설정이 되어 있는지 확인하고, 입력한 주소로 테스트 메일을 바로 보내 봅니다."""
+    require_team_password(x_team_password)
+    if not mail_enabled():
+        missing = [name for name, value in (("BREVO_API_KEY", BREVO_API_KEY), ("MAIL_FROM", MAIL_FROM)) if not value]
+        return {"configured": False, "ok": False, "error": f"Render 환경변수에 {', '.join(missing)}이(가) 없습니다."}
+    to = data.to.strip().lower()
+    if not EMAIL_PATTERN.fullmatch(to):
+        raise HTTPException(400, "테스트 메일을 받을 주소를 정확히 입력해 주세요.")
+    ok = send_mail(to, "[배움잇다 AI] 테스트 메일", "배움잇다 AI 메일 알림 테스트입니다. 이 메일이 받은편지함에 왔다면 설정이 정상입니다." + MAIL_FOOTER)
+    return {"configured": True, "ok": ok, "from": MAIL_FROM, "error": None if ok else "발송에 실패했습니다. Render 로그의 [MAIL] 줄을 확인해 주세요."}
 
 # 셰르파 3회차 체크리스트 '최종 보고서를 위한 기록 — AI 추천 정확도(이용자 문장 10개, 수정 전·후 비교)'용 고정 문장.
 # 기기·시간·동은 비워 두어 모든 멘토가 같은 조건이 되게 하고, '학습 내용' 판단만 비교합니다.
