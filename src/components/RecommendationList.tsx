@@ -39,11 +39,18 @@ function RecommendReason({ item }: { item: Candidate }) {
   }
   return null
 }
+const FACILITY_NAMES = { indoor: '실내', desk: '책상', wifi: '와이파이', outlet: '콘센트' } as const
+const FACILITY_STATUS = { yes: '있음', no: '없음', unknown: '확인 필요' } as const
+function FacilityChips({ info }: { info?: Candidate['facility_info'] }) {
+  if (!info) return null
+  return <div className="facility-chips">{(Object.keys(FACILITY_NAMES) as (keyof typeof FACILITY_NAMES)[]).map(key => <span key={key} className={`facility-chip ${info[key]}`}>{FACILITY_NAMES[key]} {FACILITY_STATUS[info[key]]}</span>)}</div>
+}
 function CandidateDetails({ item }: { item: Candidate }) {
   if (item.kind === 'space') return <dl className="candidate-details space-details">
     <div><dt>시설</dt><dd>{item.facility || '학습 공간'}</dd></div>
     <div><dt>운영시간</dt><dd>{item.operating_hours || '공식 안내에서 확인'}</dd></div>
     <div><dt>이용 절차</dt><dd>{item.usage_procedure || '공식 안내에서 확인'}</dd></div>
+    <div className="facility-row"><dt>편의시설</dt><dd><FacilityChips info={item.facility_info} /></dd></div>
   </dl>
   return <dl className="candidate-details mentor-details">
     {item.intro && <div className="intro-detail"><dt>멘토 소개</dt><dd>{item.intro}</dd></div>}

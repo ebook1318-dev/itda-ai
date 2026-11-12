@@ -13,6 +13,8 @@ export default function SpaceMap({ items, selected, onSelect }: Props) {
   }, {})), [points])
   const center: [number, number] = points.length ? [points[0].lat!, points[0].lng!] : [36.8151, 127.1139]
   if (!points.length) return null
+  const approxCount = points.filter(item => !item.coord_source || item.coord_source === 'approx').length
+  const note = approxCount === 0 ? '핀은 건물 주소 기준 위치예요. 방문 전 공식 안내에서 한 번 더 확인해 주세요.' : approxCount === points.length ? '핀 위치는 건물 정확 주소가 아니라 동 단위 대략적인 위치예요. 정확한 위치는 공식 안내에서 확인해 주세요.' : `${points.length}곳 중 ${approxCount}곳은 동 단위 대략적인 위치예요. 정확한 위치는 공식 안내에서 확인해 주세요.`
   return <div className="space-map-wrap">
     <MapContainer center={center} zoom={12} scrollWheelZoom={false} className="space-map-view">
       <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
@@ -29,6 +31,6 @@ export default function SpaceMap({ items, selected, onSelect }: Props) {
         </CircleMarker>
       })}
     </MapContainer>
-    <p className="map-note">핀 위치는 건물 정확 주소가 아니라 동 단위 대략적인 위치예요. 정확한 위치는 공식 안내에서 확인해 주세요.</p>
+    <p className="map-note">{note}</p>
   </div>
 }

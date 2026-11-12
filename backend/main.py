@@ -484,6 +484,12 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL,
             request_id INTEGER, content TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS space_geo (
+            name TEXT PRIMARY KEY, lat REAL NOT NULL, lng REAL NOT NULL, source TEXT NOT NULL, note TEXT, updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS space_facility (
+            name TEXT PRIMARY KEY, indoor TEXT, desk TEXT, wifi TEXT, outlet TEXT, updated_at TEXT
+        );
         """)
         add_column(conn, "users", "nickname_key", "TEXT")
         add_column(conn, "users", "mentor_verification_status", "TEXT DEFAULT 'not_applicable'")
@@ -540,8 +546,137 @@ def init_db():
             pass
         conn.execute("DELETE FROM candidates WHERE source='임시 샘플 데이터 (실제 확인 필요)'")
         restore_default_candidates(conn)
+# ──────────────────────────────────────────────────────────────────────────────
+# 공간 위치·시설 정보
+#  좌표 출처: verified(공개 자료로 확인) · manual(팀이 직접 입력) > geocoded(주소 자동 검색) > approx(동 단위 근사)
+#  주소 자동 검색은 OpenStreetMap(Nominatim, 무료·키 불필요)을 서버가 한 번만 호출해 결과를 DB에 저장합니다.
+#  검색 결과가 그 동 중심에서 너무 멀면(오검색 가능성) 버리고 동 단위 근사 위치를 씁니다.
+#  시설 정보(실내·책상·와이파이·콘센트)는 '제공 장비' 문구에서 확인되는 것만 '있음', 나머지는 '확인 필요'.
+#  팀 화면에서 좌표·시설 정보를 고치면 별도 표(space_geo, space_facility)에 저장돼 서버 재시작에도 유지됩니다.
+# ──────────────────────────────────────────────────────────────────────────────
+import math
+import threading
+import urllib.parse
+KNOWN_SPACE_COORDS = {
+    # 한국관광 정보(ktriptips.com, 관광공사 자료 기반) 지도 좌표로 확인 — 2026-11-13
+    "천안중앙도서관": (36.8091750, 127.1535917, "공개 자료 확인: 천안중앙도서관 (중앙로 118)"),
+    "천안시 중앙도서관 동아리실": (36.8091750, 127.1535917, "공개 자료 확인: 천안중앙도서관 (중앙로 118)"),
+    "천안시 성정평생학습관": (36.8273340, 127.1362714, "공개 자료 확인: 천안시 시민문화여성회관 (성정중4길 29)"),
+}
+NOMINATIM_URL = (os.environ.get("NOMINATIM_URL") or "https://nominatim.openstreetmap.org").rstrip("/")
+GEOCODE_MAX_KM = 7.0  # 동 중심에서 이보다 멀면 잘못 찾은 것으로 보고 버림
+CHEONAN_BBOX = (36.70, 36.98, 126.95, 127.40)  # 위도 최소·최대, 경도 최소·최대
+FACILITY_KEYS = ("indoor", "desk", "wifi", "outlet")
+_space_geo, _space_facility = {}, {}
+_geocode_lock = threading.Lock()
+
+def km_between(a, b):
+    lat1, lng1, lat2, lng2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2
+    return 6371 * 2 * math.asin(math.sqrt(h))
+
+def space_address(row):
+    return " ".join(as_list(row["regions"] or "")).strip()
+
+def derive_facility(row):
+    """'제공 장비' 문구로 알 수 있는 것만 '있음'으로 채웁니다. 모르는 건 지어내지 않고 '확인 필요'."""
+    text = f"{row['usage_procedure'] or ''} {row['facility'] or ''}"
+    return {
+        "indoor": "yes",  # 추천 후보는 회의실·동아리실·강의실 같은 실내 공간만 남김 (야외·체육시설 제외)
+        "desk": "yes" if "책상" in text else "unknown",
+        "wifi": "yes" if re.search(r"wi-?fi|와이파이", text, re.I) else "unknown",
+        "outlet": "yes" if "콘센트" in text else "unknown",
+    }
+
+def load_space_tables(conn):
+    _space_geo.clear(); _space_facility.clear()
+    for r in conn.execute("SELECT * FROM space_geo").fetchall():
+        _space_geo[r["name"]] = {"lat": r["lat"], "lng": r["lng"], "source": r["source"], "note": r["note"] or ""}
+    for r in conn.execute("SELECT * FROM space_facility").fetchall():
+        _space_facility[r["name"]] = {key: r[key] or "unknown" for key in FACILITY_KEYS}
+
+def seed_known_coords(conn):
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    statements = []
+    for name, (lat, lng, note) in KNOWN_SPACE_COORDS.items():
+        existing = conn.execute("SELECT source FROM space_geo WHERE name=?", (name,)).fetchone()
+        if existing and existing["source"] == "manual":
+            continue  # 팀이 직접 고친 좌표는 그대로 둠
+        statements.append(("INSERT OR REPLACE INTO space_geo (name, lat, lng, source, note, updated_at) VALUES (?,?,?,?,?,?)", (name, lat, lng, "verified", note, now)))
+    run_batch(conn, statements)
+
+def nominatim_lookup(query):
+    url = f"{NOMINATIM_URL}/search?" + urllib.parse.urlencode({"q": query, "format": "jsonv2", "limit": 1, "countrycodes": "kr", "accept-language": "ko"})
+    req = urllib.request.Request(url, headers={"User-Agent": "itda-ai/1.0 (+https://itda-ai.onrender.com)"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        results = json.loads(resp.read().decode("utf-8"))
+    if not results:
+        return None
+    return float(results[0]["lat"]), float(results[0]["lon"]), results[0].get("display_name", "")
+
+def geocode_queries(name, address):
+    address = re.sub(r"^충남\s", "충청남도 ", address)
+    address = re.sub(r"\s*\(.*?\)", "", address)
+    address = re.sub(r"\s+\d+층$", "", address).strip()
+    building = re.sub(r"\s*\(.*?\)", "", name)
+    building = re.sub(r"\s*(회의실|동아리실|다목적실|강의실|독서문화실|문화실)$", "", building).strip()
+    queries = [address]
+    if "천안" not in building:
+        building = f"천안시 {building}"
+    queries.append(building)
+    return queries
+
+def run_geocoding(force=False):
+    """주소가 확인되지 않은 공간의 좌표를 찾아 저장합니다. (1초에 1번 이하로 호출 — OpenStreetMap 이용 규칙)"""
+    if not _geocode_lock.acquire(blocking=False):
+        return
+    try:
+        with get_db() as conn:
+            rows = conn.execute("SELECT id, name, regions, neighborhood FROM candidates WHERE kind='space'").fetchall()
+            done = {r["name"]: r["source"] for r in conn.execute("SELECT name, source FROM space_geo").fetchall()}
+        for row in rows:
+            if row["name"] in EXCLUDED_SPACE_NAMES or done.get(row["name"]) in ("verified", "manual"):
+                continue
+            if row["name"] in done and not force:
+                continue
+            centroid = coords_for_neighborhoods(as_list(row["neighborhood"] or ""))
+            found, note = None, "주소 검색 결과 없음"
+            for query in geocode_queries(row["name"], space_address(row)):
+                try:
+                    hit = nominatim_lookup(query)
+                except Exception as error:
+                    print(f"[GEO] {row['name']} 검색 실패: {type(error).__name__}: {error}", flush=True)
+                    hit = None
+                time.sleep(1.1)
+                if not hit:
+                    continue
+                lat, lng, label = hit
+                inside = CHEONAN_BBOX[0] <= lat <= CHEONAN_BBOX[1] and CHEONAN_BBOX[2] <= lng <= CHEONAN_BBOX[3]
+                distance = km_between((lat, lng), centroid)
+                if inside and distance <= GEOCODE_MAX_KM:
+                    found, note = (lat, lng), f"검색어 '{query}' → {label[:120]}"
+                    break
+                note = f"검색 결과가 동 중심에서 {distance:.1f}km 떨어져 사용하지 않음 ('{query}')"
+            lat, lng = found or centroid
+            with get_db() as conn:
+                conn.execute("INSERT OR REPLACE INTO space_geo (name, lat, lng, source, note, updated_at) VALUES (?,?,?,?,?,?)",
+                             (row["name"], lat, lng, "geocoded" if found else "approx", note, time.strftime("%Y-%m-%d %H:%M:%S")))
+            print(f"[GEO] {row['name']}: {'찾음' if found else '동 단위 근사'} · {note}", flush=True)
+        with get_db() as conn:
+            load_space_tables(conn)
+    finally:
+        _geocode_lock.release()
+
+def start_geocoding_in_background(force=False):
+    threading.Thread(target=run_geocoding, kwargs={"force": force}, daemon=True).start()
+
 app = FastAPI()
 init_db()
+with get_db() as _conn:
+    seed_known_coords(_conn)
+    load_space_tables(_conn)
+if (os.environ.get("GEOCODE_ON_START") or "1") == "1":
+    start_geocoding_in_background()
 class AuthInput(BaseModel):
     nickname: str
     password: str
@@ -640,7 +775,14 @@ def candidate_item(row, request=None):
         item[key] = as_list(item[key])
     item["neighborhoods"] = as_list(item.get("neighborhood", ""))
     item["topics"] = as_list(item.get("topics", "") or "")
-    item["lat"], item["lng"] = coords_for_neighborhoods(item["neighborhoods"])
+    geo = _space_geo.get(item["name"]) if item["kind"] == "space" else None
+    if geo:
+        item["lat"], item["lng"], item["coord_source"] = geo["lat"], geo["lng"], geo["source"]
+    else:
+        item["lat"], item["lng"] = coords_for_neighborhoods(item["neighborhoods"])
+        item["coord_source"] = "approx"
+    if item["kind"] == "space":
+        item["facility_info"] = _space_facility.get(item["name"]) or derive_facility(row)
     item["consent_confirmed"] = bool(item.get("consent_confirmed", 0))
     if item["kind"] == "mentor" and item.get("verification_status") != "verified":
         item["verification_status"] = "pending"
@@ -788,7 +930,10 @@ def _space_for_prompt(item):
     return {
         "id": item["id"], "이름": item["name"], "시설": item.get("facility") or "", "운영시간": item.get("operating_hours") or "",
         "이용 절차·장비": item.get("usage_procedure") or "", "가능 시간": item["times"], "동": item["neighborhoods"],
+        "편의시설": {FACILITY_LABEL[k]: STATUS_LABEL_KO[v] for k, v in (item.get("facility_info") or {}).items()},
     }
+FACILITY_LABEL = {"indoor": "실내", "desk": "책상", "wifi": "와이파이", "outlet": "콘센트"}
+STATUS_LABEL_KO = {"yes": "있음", "no": "없음", "unknown": "확인 필요"}
 
 def build_matching_prompt(request, mentors, spaces):
     learner = {
@@ -1291,6 +1436,70 @@ def team_ai_check(x_team_password: str | None = Header(default=None)):
     except AIError as error:
         return {"configured": bool(ANTHROPIC_API_KEY), "model": f"{ANTHROPIC_MODEL} · {'Anthropic 직접' if ai_provider() == 'anthropic' else '모두의 AI 실험실 게이트웨이'}", "ok": False, "error": str(error), "elapsed_ms": round((time.time() - started) * 1000)}
 
+class SpaceLocationInput(BaseModel):
+    coords: str  # "36.8091, 127.1535" 처럼 지도에서 복사한 그대로
+class SpaceFacilityInput(BaseModel):
+    indoor: str = "unknown"
+    desk: str = "unknown"
+    wifi: str = "unknown"
+    outlet: str = "unknown"
+def team_space_row(conn, space_id):
+    row = conn.execute("SELECT * FROM candidates WHERE id=? AND kind='space'", (space_id,)).fetchone()
+    if not row or row["name"] in EXCLUDED_SPACE_NAMES:
+        raise HTTPException(404, "공간을 찾지 못했습니다.")
+    return row
+@app.get("/api/team/spaces")
+def team_spaces(x_team_password: str | None = Header(default=None)):
+    """추천 후보 공간의 좌표 출처·시설 정보 (팀 확인·수정용)"""
+    require_team_password(x_team_password)
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM candidates WHERE kind='space' ORDER BY id").fetchall()
+    out = []
+    for row in rows:
+        if row["name"] in EXCLUDED_SPACE_NAMES:
+            continue
+        item = candidate_item(row)
+        geo = _space_geo.get(row["name"]) or {}
+        out.append({"id": row["id"], "name": row["name"], "address": space_address(row), "neighborhood": row["neighborhood"],
+                    "lat": item["lat"], "lng": item["lng"], "coord_source": item["coord_source"], "coord_note": geo.get("note", "아직 검색 전"),
+                    "km_from_dong": round(km_between((item["lat"], item["lng"]), coords_for_neighborhoods(as_list(row["neighborhood"] or ""))), 1),
+                    "facility_info": item["facility_info"], "facility_source": "team" if row["name"] in _space_facility else "data"})
+    return {"geocoding": _geocode_lock.locked(), "spaces": out}
+@app.put("/api/team/spaces/{space_id}/location")
+def team_space_location(space_id: int, data: SpaceLocationInput, x_team_password: str | None = Header(default=None)):
+    require_team_password(x_team_password)
+    numbers = re.findall(r"-?\d+(?:\.\d+)?", data.coords)
+    if len(numbers) != 2:
+        raise HTTPException(400, "'위도, 경도' 형식으로 붙여넣어 주세요. 예: 36.8091, 127.1535")
+    lat, lng = float(numbers[0]), float(numbers[1])
+    if not (CHEONAN_BBOX[0] <= lat <= CHEONAN_BBOX[1] and CHEONAN_BBOX[2] <= lng <= CHEONAN_BBOX[3]):
+        raise HTTPException(400, "천안시 밖의 좌표예요. 위도·경도 순서를 확인해 주세요.")
+    with get_db() as conn:
+        row = team_space_row(conn, space_id)
+        conn.execute("INSERT OR REPLACE INTO space_geo (name, lat, lng, source, note, updated_at) VALUES (?,?,?,?,?,?)",
+                     (row["name"], lat, lng, "manual", "팀이 지도에서 직접 확인", time.strftime("%Y-%m-%d %H:%M:%S")))
+        load_space_tables(conn)
+    return {"ok": True}
+@app.put("/api/team/spaces/{space_id}/facility")
+def team_space_facility(space_id: int, data: SpaceFacilityInput, x_team_password: str | None = Header(default=None)):
+    require_team_password(x_team_password)
+    values = [getattr(data, key) for key in FACILITY_KEYS]
+    if any(value not in ("yes", "no", "unknown") for value in values):
+        raise HTTPException(400, "있음·없음·확인 필요 중에서 골라 주세요.")
+    with get_db() as conn:
+        row = team_space_row(conn, space_id)
+        conn.execute("INSERT OR REPLACE INTO space_facility (name, indoor, desk, wifi, outlet, updated_at) VALUES (?,?,?,?,?,?)",
+                     (row["name"], *values, time.strftime("%Y-%m-%d %H:%M:%S")))
+        load_space_tables(conn)
+    return {"ok": True}
+@app.post("/api/team/spaces/geocode")
+def team_space_geocode(x_team_password: str | None = Header(default=None)):
+    """직접 확인하지 않은 공간의 좌표를 주소로 다시 찾습니다 (뒤에서 30초~1분 소요)."""
+    require_team_password(x_team_password)
+    if _geocode_lock.locked():
+        return {"ok": True, "running": True}
+    start_geocoding_in_background(force=True)
+    return {"ok": True, "running": True}
 class MailTestInput(BaseModel):
     to: str
 @app.post("/api/team/mail-test")
