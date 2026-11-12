@@ -41,7 +41,22 @@ def coords_for_neighborhoods(neighborhoods: list[str]):
         if name in NEIGHBORHOOD_COORDS:
             return NEIGHBORHOOD_COORDS[name]
     return DEFAULT_COORDS
+# DB 저장 위치: TURSO_DATABASE_URL·TURSO_AUTH_TOKEN 환경변수가 있으면 Turso(클라우드, 영구 저장),
+# 없으면 서버 디스크의 SQLite 파일(로컬 개발용 — Render 무료 서버에서는 재시작 때 지워짐).
+TURSO_DATABASE_URL = (os.environ.get("TURSO_DATABASE_URL") or "").strip()
+TURSO_AUTH_TOKEN = (os.environ.get("TURSO_AUTH_TOKEN") or "").strip()
+_turso_client = None
+if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+    from backend.turso import TursoClient, TursoConnection
+    _turso_client = TursoClient(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN)
+    print("[DB] Turso 사용 (영구 저장)", flush=True)
+else:
+    print("[DB] 로컬 SQLite 사용 — Render에서는 재시작 시 데이터가 사라집니다. TURSO_DATABASE_URL·TURSO_AUTH_TOKEN을 설정하세요.", flush=True)
+def db_backend():
+    return "turso" if _turso_client else "sqlite"
 def get_db():
+    if _turso_client:
+        return TursoConnection(_turso_client)
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -50,10 +65,22 @@ def as_list(value: str):
     return [item.strip() for item in value.split(",") if item.strip()]
 def normalize_nickname(nickname: str):
     return " ".join(nickname.strip().split()).casefold()
+def run_batch(conn, statements):
+    """여러 문장을 한 번에 실행합니다. Turso에서는 한 번의 요청으로 묶어 보내 시작 시간을 줄입니다."""
+    if not statements:
+        return
+    if hasattr(conn, "batch"):
+        conn.batch(statements)
+    else:
+        for sql, params in statements:
+            conn.execute(sql, params)
+_table_columns = {}  # init_db 동안 테이블 컬럼 목록을 기억해 PRAGMA 반복 호출을 줄임
 def add_column(conn, table, column, definition):
-    fields = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    if column not in fields:
+    if table not in _table_columns:
+        _table_columns[table] = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in _table_columns[table]:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        _table_columns[table].add(column)
 def migrate_space_id_optional(conn):
     """학습 공간 선택을 선택사항으로 바꾸면서, 예전에 만들어진 DB는 space_id가 NOT NULL로 박혀 있을 수
     있어 요청을 보내도 못 들어갑니다. SQLite는 컬럼의 NOT NULL을 직접 못 바꾸므로, 같은 컬럼 구성으로
@@ -309,13 +336,15 @@ def restore_default_candidates(conn):
             "09:00 ~ 18:00", "전화 및 온라인 신청 (제공 장비: 책상, 의자)"
         ),
     ]
+    existing_spaces = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM candidates WHERE kind='space' AND mentor_user_id IS NULL").fetchall()}
+    space_statements = []
     for row in rows:
-        existing = conn.execute("SELECT id FROM candidates WHERE name=? AND kind='space' AND mentor_user_id IS NULL", (row[1],)).fetchone()
         values = (*row[2:15], row[15], row[16], row[17])
-        if existing:
-            conn.execute("""UPDATE candidates SET tools=?, levels=?, devices=?, regions=?, times=?, official_url=?, source=?, source_date=?, description=?, distance=?, neighborhood=?, consent_confirmed=?, verification_status=?, facility=?, operating_hours=?, usage_procedure=? WHERE id=?""", (*values, existing["id"]))
+        if row[1] in existing_spaces:
+            space_statements.append(("""UPDATE candidates SET tools=?, levels=?, devices=?, regions=?, times=?, official_url=?, source=?, source_date=?, description=?, distance=?, neighborhood=?, consent_confirmed=?, verification_status=?, facility=?, operating_hours=?, usage_procedure=? WHERE id=?""", (*values, existing_spaces[row[1]])))
         else:
-            conn.execute("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,consent_confirmed,verification_status,facility,operating_hours,usage_procedure) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", row)
+            space_statements.append(("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,consent_confirmed,verification_status,facility,operating_hours,usage_procedure) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", row))
+    run_batch(conn, space_statements)
     # Render 무료 요금제는 재배포뿐 아니라 "잠자기→깨어나기"만으로도 임시 디스크가 초기화될 수 있습니다.
     # 데모가 항상 작동하도록, 실제로 가입했던 멘토 5명의 정보(2026-11-03 기준 실제 입력값)를
     # 공간 데이터와 같은 방식으로 코드에 고정해 둡니다. 비밀번호는 모두 공통 기본값으로 설정하며,
@@ -339,26 +368,32 @@ def restore_default_candidates(conn):
     mentor_source, mentor_source_date = "예시 데이터", "2026-11-08"
     # 예전 출처 문구로 저장된 기본 멘토도 새 문구로 바꿔 줍니다.
     conn.execute("UPDATE candidates SET source=? WHERE kind='mentor' AND source='데모용 기본 멘토 (재배포되어도 유지)'", (mentor_source,))
-    for nickname, tools, devices, times, neighborhoods, topics, intro in mentor_rows:
-        nickname_key = normalize_nickname(nickname)
-        conn.execute("""INSERT OR IGNORE INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed)
-            VALUES (?,?,?,?,?,?)""", (nickname, nickname_key, hashlib.sha256(DEFAULT_MENTOR_PASSWORD.encode()).hexdigest(), "mentor", "verified", 1))
-        user = conn.execute("SELECT id, role FROM users WHERE nickname_key=?", (nickname_key,)).fetchone()
+    keys = [normalize_nickname(r[0]) for r in mentor_rows]
+    run_batch(conn, [("""INSERT OR IGNORE INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed)
+            VALUES (?,?,?,?,?,?)""", (r[0], key, hashlib.sha256(DEFAULT_MENTOR_PASSWORD.encode()).hexdigest(), "mentor", "verified", 1)) for r, key in zip(mentor_rows, keys)])
+    marks = ",".join("?" * len(keys))
+    users_by_key = {u["nickname_key"]: u for u in conn.execute(f"SELECT id, role, nickname_key FROM users WHERE nickname_key IN ({marks})", keys).fetchall()}
+    user_ids = [u["id"] for u in users_by_key.values()]
+    existing_by_user = {c["mentor_user_id"]: c["id"] for c in conn.execute(f"SELECT id, mentor_user_id FROM candidates WHERE mentor_user_id IN ({','.join('?' * len(user_ids))})", user_ids).fetchall()} if user_ids else {}
+    mentor_statements = []
+    for (nickname, tools, devices, times, neighborhoods, topics, intro), nickname_key in zip(mentor_rows, keys):
+        user = users_by_key.get(nickname_key)
         if not user or user["role"] != "mentor":
             continue
-        exists = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=?", (user["id"],)).fetchone()
+        exists = existing_by_user.get(user["id"])
         if not exists:
-            conn.execute("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,topics,intro,mentor_user_id,consent_confirmed,verification_status)
+            mentor_statements.append(("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,topics,intro,mentor_user_id,consent_confirmed,verification_status)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                 "mentor", nickname, ",".join(tools), "입문,초급,중급", ",".join(devices), "천안시", ",".join(times),
                 "", mentor_source, mentor_source_date, "수강 전 공식 안내 페이지에서 운영 정보를 확인해 주세요.",
                 "거리 정보는 공식 안내에서 확인", ",".join(neighborhoods), ",".join(topics), intro, user["id"], 1, "verified"
-            ))
+            )))
         else:
             # 소개글이 비어 있을 때만 채웁니다 (멘토가 직접 고친 소개글은 덮어쓰지 않음).
-            conn.execute("UPDATE candidates SET intro=? WHERE id=? AND (intro IS NULL OR intro='')", (intro, exists["id"]))
+            mentor_statements.append(("UPDATE candidates SET intro=? WHERE id=? AND (intro IS NULL OR intro='')", (intro, exists)))
         # 데모 안정성을 위해, 계정이 어떤 경로로 생겼든(하드코딩/재가입 모두) 확인 상태만큼은 항상 맞춰줍니다.
-        conn.execute("UPDATE users SET mentor_verification_status='verified', mentor_consent_confirmed=1 WHERE id=?", (user["id"],))
+        mentor_statements.append(("UPDATE users SET mentor_verification_status='verified', mentor_consent_confirmed=1 WHERE id=?", (user["id"],)))
+    run_batch(conn, mentor_statements)
 def add_sample_candidates(conn):
     source = "임시 샘플 데이터 (실제 확인 필요)"
     source_date = "2026-11-03"
@@ -632,6 +667,16 @@ AI_MAX_MENTOR_POOL = 10  # AI에게 보내는 멘토 후보 최대 수 (비용·
 class AIError(Exception):
     pass
 
+# AI 접속이 실패하면 5분 동안은 AI를 건너뛰고 바로 규칙 추천을 보여줍니다.
+# (게이트웨이가 막혀 있을 때 추천마다 15초씩 기다리지 않도록. 'AI 연결 확인'이 성공하면 즉시 해제)
+AI_SKIP_SECONDS = 300
+_ai_skip_until = 0.0
+def ai_temporarily_skipped():
+    return time.time() < _ai_skip_until
+def mark_ai_result(ok: bool):
+    global _ai_skip_until
+    _ai_skip_until = 0.0 if ok else time.time() + AI_SKIP_SECONDS
+
 def ai_provider():
     return "anthropic" if ANTHROPIC_API_KEY.startswith("sk-ant-") else "gateway"
 
@@ -739,6 +784,8 @@ def rank_mentors(mentor_items, request, use_ai=True, spaces=None):
     others = by_score([m for m in mentor_items if not same_tool(m, request)])
     if not use_ai or not ANTHROPIC_API_KEY or (not matched and not spaces):
         return matched + others, False, (None if use_ai and ANTHROPIC_API_KEY else "AI 미사용")
+    if ai_temporarily_skipped():
+        return matched + others, False, "최근 AI 연결 실패로 5분간 규칙 추천 사용 중"
     pool = matched[:AI_MAX_MENTOR_POOL]
     rest = matched[AI_MAX_MENTOR_POOL:]
     try:
@@ -760,13 +807,15 @@ def rank_mentors(mentor_items, request, use_ai=True, spaces=None):
             reason = str(entry.get("reason") or "").strip() if isinstance(entry, dict) else ""
             if space and reason and not contains_contact(reason):
                 space["ai_reason"] = reason
+        mark_ai_result(True)
         return ordered + rest + others, True, None
     except AIError as error:
+        mark_ai_result(False)
         return matched + others, False, str(error)
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "db": db_backend()}
 @app.post("/api/auth/signup")
 def signup(data: AuthInput):
     nickname = " ".join(data.nickname.strip().split())
@@ -1009,6 +1058,7 @@ def team_ai_check(x_team_password: str | None = Header(default=None)):
     started = time.time()
     try:
         call_claude("'확인'이라고만 답하세요.", max_tokens=10)
+        mark_ai_result(True)  # 연결이 되면 5분 건너뛰기를 바로 해제
         return {"configured": bool(ANTHROPIC_API_KEY), "model": f"{ANTHROPIC_MODEL} · {'Anthropic 직접' if ai_provider() == 'anthropic' else '모두의 AI 실험실 게이트웨이'}", "ok": True, "error": None, "elapsed_ms": round((time.time() - started) * 1000)}
     except AIError as error:
         return {"configured": bool(ANTHROPIC_API_KEY), "model": f"{ANTHROPIC_MODEL} · {'Anthropic 직접' if ai_provider() == 'anthropic' else '모두의 AI 실험실 게이트웨이'}", "ok": False, "error": str(error), "elapsed_ms": round((time.time() - started) * 1000)}
