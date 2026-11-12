@@ -618,47 +618,58 @@ def candidate_item(row, request=None):
 #         선택된 공간에는 추천 이유 문장만 씁니다.
 #  3) 검증: AI가 목록에 없는 후보를 내면 버리고, 빠진 후보는 규칙 순서로 채웁니다.
 #  4) 대체: API 키가 없거나 호출이 실패·지연되면 규칙 순서 그대로 보여줍니다 (서비스는 멈추지 않음).
-# 환경변수: ANTHROPIC_API_KEY(필수), ANTHROPIC_MODEL(선택, 기본 Sonnet)
+# 환경변수: ANTHROPIC_API_KEY(필수, 모두의 AI 실험실 팀 공유 키), ANTHROPIC_MODEL(선택, 기본 Sonnet),
+#          AI_GATEWAY_URL(선택, 기본 모두의 AI 실험실 게이트웨이)
+# 호출 경로: 키가 'sk-ant-'로 시작하면 Anthropic API에 직접, 그 외에는 모두의 AI 실험실 게이트웨이
+#           (OpenAI 형식 /chat/completions, Bearer 인증)로 보냅니다.
 # ──────────────────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+ANTHROPIC_API_KEY = (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("AI_API_KEY") or "").strip()
 ANTHROPIC_MODEL = (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-5-5").strip()
-AI_TIMEOUT_SECONDS = 10
+AI_GATEWAY_URL = (os.environ.get("AI_GATEWAY_URL") or "https://gateway.aitestbed.kr/v1").strip().rstrip("/")
+AI_TIMEOUT_SECONDS = 15
 AI_MAX_MENTOR_POOL = 10  # AI에게 보내는 멘토 후보 최대 수 (비용·속도 제한)
 
 class AIError(Exception):
     pass
 
+def ai_provider():
+    return "anthropic" if ANTHROPIC_API_KEY.startswith("sk-ant-") else "gateway"
+
 def call_claude(prompt: str, max_tokens: int = 900):
-    """Claude API를 호출해 답변 텍스트를 돌려줍니다. 실패하면 원인을 Render 로그에 남기고 AIError를 냅니다."""
+    """Claude를 호출해 답변 텍스트를 돌려줍니다. 실패하면 원인을 Render 로그에 남기고 AIError를 냅니다."""
     if not ANTHROPIC_API_KEY:
         raise AIError("ANTHROPIC_API_KEY 환경변수가 없습니다.")
-    body = json.dumps({
-        "model": ANTHROPIC_MODEL,
-        "max_tokens": max_tokens,
-        "temperature": 0,  # 같은 입력에는 같은 결과가 나오도록 (정확도 테스트에 필요)
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        headers={
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
+    messages = [{"role": "user", "content": prompt}]
+    # temperature 0: 같은 입력에는 같은 결과가 나오도록 (정확도 테스트에 필요)
+    payload = {"model": ANTHROPIC_MODEL, "max_tokens": max_tokens, "temperature": 0, "messages": messages}
+    if ai_provider() == "anthropic":
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01"}
+    else:
+        url = f"{AI_GATEWAY_URL}/chat/completions"
+        headers = {"Authorization": f"Bearer {ANTHROPIC_API_KEY}"}
+    headers.update({"content-type": "application/json", "user-agent": "itda-ai/1.0"})
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=AI_TIMEOUT_SECONDS) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")[:300]
-        print(f"[AI] Claude API 오류 {error.code}: {detail}", flush=True)
-        raise AIError(f"Claude API 오류 {error.code}: {detail}")
+        print(f"[AI] {ai_provider()} 오류 {error.code}: {detail}", flush=True)
+        raise AIError(f"AI 오류 {error.code}: {detail}")
     except Exception as error:
-        print(f"[AI] Claude API 호출 실패: {type(error).__name__}: {error}", flush=True)
+        print(f"[AI] {ai_provider()} 호출 실패: {type(error).__name__}: {error}", flush=True)
         raise AIError(f"{type(error).__name__}: {error}")
-    return "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text").strip()
+    try:
+        if ai_provider() == "anthropic":
+            return "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text").strip()
+        content = data["choices"][0]["message"]["content"]
+        if isinstance(content, list):  # 일부 게이트웨이는 조각 목록으로 돌려줌
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        return (content or "").strip()
+    except (KeyError, IndexError, TypeError) as error:
+        print(f"[AI] 응답 형식 이상: {str(data)[:300]}", flush=True)
+        raise AIError(f"AI 응답 형식을 해석하지 못했습니다: {type(error).__name__}")
 
 def parse_json_object(text: str):
     """AI 답변에서 JSON 객체만 꺼냅니다 (앞뒤에 다른 말이 붙어 있어도 처리)."""
@@ -998,9 +1009,9 @@ def team_ai_check(x_team_password: str | None = Header(default=None)):
     started = time.time()
     try:
         call_claude("'확인'이라고만 답하세요.", max_tokens=10)
-        return {"configured": bool(ANTHROPIC_API_KEY), "model": ANTHROPIC_MODEL, "ok": True, "error": None, "elapsed_ms": round((time.time() - started) * 1000)}
+        return {"configured": bool(ANTHROPIC_API_KEY), "model": f"{ANTHROPIC_MODEL} · {'Anthropic 직접' if ai_provider() == 'anthropic' else '모두의 AI 실험실 게이트웨이'}", "ok": True, "error": None, "elapsed_ms": round((time.time() - started) * 1000)}
     except AIError as error:
-        return {"configured": bool(ANTHROPIC_API_KEY), "model": ANTHROPIC_MODEL, "ok": False, "error": str(error), "elapsed_ms": round((time.time() - started) * 1000)}
+        return {"configured": bool(ANTHROPIC_API_KEY), "model": f"{ANTHROPIC_MODEL} · {'Anthropic 직접' if ai_provider() == 'anthropic' else '모두의 AI 실험실 게이트웨이'}", "ok": False, "error": str(error), "elapsed_ms": round((time.time() - started) * 1000)}
 
 # 셰르파 3회차 체크리스트 '최종 보고서를 위한 기록 — AI 추천 정확도(이용자 문장 10개, 수정 전·후 비교)'용 고정 문장.
 # 기기·시간·동은 비워 두어 모든 멘토가 같은 조건이 되게 하고, '학습 내용' 판단만 비교합니다.
