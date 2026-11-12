@@ -5,7 +5,7 @@
 const EFFECTIVE_DATE = '2026년 11월 14일'
 
 const TRANSFERS = [
-  { to: 'Render', country: '미국', items: '서비스 이용 정보 전반, 접속 기록', purpose: '웹 서버 운영' },
+  { to: 'Render', country: '싱가포르', items: '서비스 이용 정보 전반, 접속 기록', purpose: '웹 서버 운영' },
   { to: 'Turso', country: '일본(도쿄)', items: '1조의 회원·이용 정보', purpose: '데이터 저장' },
   { to: 'Anthropic (Claude) — 모두의 AI 실험실 게이트웨이 경유', country: '미국', items: '배우고 싶은 내용과 학습 조건, 멘토의 닉네임·주제·소개글·조건 (이메일·비밀번호는 보내지 않음)', purpose: 'AI 추천 판단과 추천 이유 작성' },
 ]
