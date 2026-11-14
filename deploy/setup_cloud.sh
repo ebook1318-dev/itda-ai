@@ -32,9 +32,18 @@ if ! command -v python3.11 >/dev/null 2>&1; then
 fi
 ok "$(python3.11 --version)"
 if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 18 ]; then
-  dnf module reset -y nodejs >/dev/null 2>&1 || true
-  dnf module enable -y nodejs:20 >/dev/null
-  dnf install -y nodejs >/dev/null
+  # 서버의 프로그램 목록(dnf)에 Node 20이 없을 수 있어서, Node 공식 사이트에서 직접 받습니다.
+  NODE_VERSION="v20.18.1"
+  case "$(uname -m)" in x86_64) NODE_ARCH=x64 ;; aarch64) NODE_ARCH=arm64 ;; *) echo "지원하지 않는 CPU: $(uname -m)"; exit 1 ;; esac
+  command -v xz >/dev/null 2>&1 || dnf install -y xz >/dev/null
+  curl -fsSL "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-$NODE_ARCH.tar.xz" -o /tmp/node.tar.xz
+  rm -rf /usr/local/lib/nodejs && mkdir -p /usr/local/lib/nodejs
+  tar -xJf /tmp/node.tar.xz -C /usr/local/lib/nodejs --strip-components=1
+  ln -sf /usr/local/lib/nodejs/bin/node /usr/local/bin/node
+  ln -sf /usr/local/lib/nodejs/bin/npm /usr/local/bin/npm
+  ln -sf /usr/local/lib/nodejs/bin/npx /usr/local/bin/npx
+  rm -f /tmp/node.tar.xz
+  hash -r
 fi
 ok "Node $(node --version)"
 command -v git >/dev/null 2>&1 || dnf install -y git >/dev/null
