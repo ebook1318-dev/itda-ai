@@ -9,7 +9,10 @@ import json
 import urllib.request
 import urllib.error
 import time
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends, Request
+import contextvars
+import threading
+from collections import deque
 import secrets
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -679,6 +682,42 @@ def start_geocoding_in_background(force=False):
     threading.Thread(target=run_geocoding, kwargs={"force": force}, daemon=True).start()
 
 app = FastAPI()
+
+# ── 남용 제한 ─────────────────────────────────────────────────────────────
+# 같은 접속 주소(IP)에서 짧은 시간에 너무 많이 시도하면 잠시 막습니다.
+# (서버 한 대 안의 메모리에만 기록 — 서버를 다시 켜면 초기화되지만, 대회 규모에는 충분)
+_client_ip = contextvars.ContextVar("client_ip", default="unknown")
+@app.middleware("http")
+async def remember_client_ip(request: Request, call_next):
+    # 네이버 서버는 Caddy가 앞에서 받아 넘겨주고, uvicorn --proxy-headers가 실제 접속 주소로 바꿔 줍니다.
+    ip = request.client.host if request.client else "unknown"
+    if os.environ.get("RENDER"):  # Render는 자체 중계 서버를 거쳐 들어오므로 첫 번째 X-Forwarded-For 값이 실제 접속 주소
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        ip = forwarded or ip
+    _client_ip.set(ip)
+    return await call_next(request)
+_hits: dict[str, deque] = {}
+_hits_lock = threading.Lock()
+def rate_limit(name: str, limit: int, window: int, message: str, key: str | None = None):
+    """window초 동안 limit번까지 허용. 넘으면 몇 초 뒤에 다시 하면 되는지 알려줍니다."""
+    now = time.time()
+    bucket_key = f"{name}:{key or _client_ip.get()}"
+    with _hits_lock:
+        if len(_hits) > 20000:  # 메모리 보호: 오래된 기록 정리
+            for k in [k for k, q in _hits.items() if not q or now - q[-1] > 3600]:
+                _hits.pop(k, None)
+        q = _hits.setdefault(bucket_key, deque())
+        while q and now - q[0] > window:
+            q.popleft()
+        if len(q) >= limit:
+            wait = int(window - (now - q[0])) + 1
+            when = f"{wait}초" if wait < 120 else f"{(wait + 59) // 60}분"
+            raise HTTPException(429, f"{message} {when} 뒤에 다시 시도해 주세요.")
+        q.append(now)
+def rate_hit_count(name: str, window: int, key: str | None = None) -> int:
+    now = time.time()
+    q = _hits.get(f"{name}:{key or _client_ip.get()}") or deque()
+    return sum(1 for t in q if now - t <= window)
 init_db()
 with get_db() as _conn:
     seed_known_coords(_conn)
@@ -749,9 +788,15 @@ class TeamAccessInput(BaseModel):
     password: str
 class TeamStatusInput(BaseModel):
     status: str
+TEAM_MAX_FAILS, TEAM_LOCK_SECONDS = 5, 900
 def require_team_password(team_password: str | None):
-    if not TEAM_PASSWORD or team_password is None or team_password.strip() != TEAM_PASSWORD:
-        raise HTTPException(401, "팀 비밀번호가 맞지 않습니다.")
+    if rate_hit_count("team-fail", TEAM_LOCK_SECONDS) >= TEAM_MAX_FAILS:
+        rate_limit("team-fail", TEAM_MAX_FAILS, TEAM_LOCK_SECONDS, "팀 비밀번호를 여러 번 틀려서 잠시 막아 두었어요.")
+    if not TEAM_PASSWORD or team_password is None or not hmac.compare_digest(team_password.strip().encode(), TEAM_PASSWORD.encode()):
+        fails = rate_hit_count("team-fail", TEAM_LOCK_SECONDS) + 1
+        rate_limit("team-fail", TEAM_MAX_FAILS, TEAM_LOCK_SECONDS, "팀 비밀번호를 여러 번 틀려서 잠시 막아 두었어요.")
+        left = TEAM_MAX_FAILS - fails
+        raise HTTPException(401, f"팀 비밀번호가 맞지 않습니다. ({left}번 더 틀리면 15분 동안 막혀요)" if left > 0 else "팀 비밀번호를 5번 틀려서 15분 동안 막아 두었어요.")
 EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 WITHDRAWN_PREFIX = "탈퇴한 회원 "
 # ── 로그인 출입증(세션 토큰) ─────────────────────────────────────────────
@@ -1149,6 +1194,7 @@ class EmailCodeInput(BaseModel):
 @app.post("/api/account/email/send-code")
 def send_email_code(data: EmailCodeInput, background: BackgroundTasks, me: dict = Depends(current_user)):
     same_user(me, data.user_id)
+    rate_limit("email-code", 10, 3600, "인증코드를 너무 많이 요청했어요.")
     if not mail_enabled():
         raise HTTPException(503, "메일 알림을 준비하고 있어요. 조금만 기다려 주세요.")
     with get_db() as conn:
@@ -1190,6 +1236,7 @@ def health():
     return {"ok": True, "db": db_backend()}
 @app.post("/api/auth/signup")
 def signup(data: AuthInput, background: BackgroundTasks):
+    rate_limit("signup", 5, 3600, "같은 곳에서 가입을 너무 많이 시도했어요.")
     nickname = " ".join(data.nickname.strip().split())
     nickname_key = normalize_nickname(nickname)
     if len(nickname) < 2 or len(data.password) < 8 or data.role not in ("learner", "mentor"):
@@ -1243,6 +1290,7 @@ def withdraw(data: WithdrawInput, me: dict = Depends(current_user)):
     return {"ok": True}
 @app.post("/api/auth/login")
 def login(data: LoginInput):
+    rate_limit("login", 30, 600, "로그인을 너무 많이 시도했어요.")
     nickname_key = normalize_nickname(data.nickname)
     now = time.time()
     with get_db() as conn:
@@ -1307,6 +1355,7 @@ def find_nickname(data: FindNicknameInput, background: BackgroundTasks):
     email = data.email.strip().lower()
     if not EMAIL_PATTERN.fullmatch(email):
         raise HTTPException(400, "가입할 때 쓴 이메일 주소를 정확히 입력해 주세요.")
+    rate_limit("recovery", 5, 600, "계정 찾기를 너무 많이 요청했어요.")
     recovery_throttle("email:" + email)
     with get_db() as conn:
         rows = conn.execute("SELECT nickname, role FROM users WHERE email=? AND withdrawn_at IS NULL", (email,)).fetchall()
@@ -1322,6 +1371,7 @@ def reset_send_code(data: ResetCodeInput, background: BackgroundTasks):
     key = normalize_nickname(data.nickname)
     if not key:
         raise HTTPException(400, "닉네임을 입력해 주세요.")
+    rate_limit("recovery", 5, 600, "계정 찾기를 너무 많이 요청했어요.")
     recovery_throttle("reset:" + key)
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE nickname_key=? AND withdrawn_at IS NULL", (key,)).fetchone()
@@ -1335,6 +1385,7 @@ def reset_send_code(data: ResetCodeInput, background: BackgroundTasks):
     return {"ok": True, "message": "이메일 인증을 마친 계정이라면 재설정 코드를 보냈어요. 메일함(스팸함 포함)을 확인해 주세요."}
 @app.post("/api/auth/reset/confirm")
 def reset_confirm(data: ResetConfirmInput):
+    rate_limit("reset-confirm", 20, 600, "코드 확인을 너무 많이 시도했어요.")
     key = normalize_nickname(data.nickname)
     code = "".join(ch for ch in data.code if ch.isdigit())
     if len(data.new_password) < 8:
@@ -1360,6 +1411,8 @@ def reset_confirm(data: ResetConfirmInput):
     return {"ok": True, "message": "새 비밀번호로 바꿨어요. 다른 기기에서는 모두 로그아웃됐어요. 새 비밀번호로 로그인해 주세요."}
 @app.post("/api/recommendations")
 def recommendations(request: RecommendationRequest):
+    rate_limit("recommend-min", 10, 60, "추천을 너무 자주 요청했어요.")
+    rate_limit("recommend-hour", 60, 3600, "추천을 1시간에 60번까지 받을 수 있어요.")
     with get_db() as conn:
         cursor = conn.execute("INSERT INTO recommendation_requests (tool,course_name,level,device,region,time_slot) VALUES (?,?,?,?,?,?)", (request.tool, request.course_name, request.level, ",".join(request.devices), ",".join(request.neighborhoods), ",".join(request.time_slots)))
         rows = conn.execute("SELECT * FROM candidates").fetchall()
@@ -1521,8 +1574,7 @@ def update_mentor(data: MentorProfile, me: dict = Depends(current_user)):
     return {"ok": True, "verification_status": "pending"}
 @app.post("/api/team/access")
 def team_access(data: TeamAccessInput):
-    if data.password.strip() != TEAM_PASSWORD:
-        raise HTTPException(401, "팀 비밀번호가 맞지 않습니다.")
+    require_team_password(data.password)
     return {"ok": True}
 @app.get("/api/team/mentors")
 def team_mentors(x_team_password: str | None = Header(default=None)):
@@ -1794,6 +1846,7 @@ class MailTestInput(BaseModel):
 def team_mail_test(data: MailTestInput, x_team_password: str | None = Header(default=None)):
     """메일 설정이 되어 있는지 확인하고, 입력한 주소로 테스트 메일을 바로 보내 봅니다."""
     require_team_password(x_team_password)
+    rate_limit("mail-test", 10, 3600, "테스트 메일은 1시간에 10번까지 보낼 수 있어요.", key="all")
     if not mail_enabled():
         missing = [name for name, value in (("BREVO_API_KEY", BREVO_API_KEY), ("MAIL_FROM", MAIL_FROM)) if not value]
         return {"configured": False, "ok": False, "error": f"Render 환경변수에 {', '.join(missing)}이(가) 없습니다."}
