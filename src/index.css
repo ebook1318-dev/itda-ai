@@ -236,3 +236,5 @@ input:not([type="checkbox"]):not([type="radio"]), textarea, select { max-width:1
 .consent-inline { display:inline-flex; align-items:center; gap:var(--space-1); font-size:var(--text-sm); }
 .account-form textarea { min-height:140px; padding:var(--space-3); border:var(--border-width) solid var(--color-border-strong); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-text); font:inherit; resize:vertical; }
 .site-footer a + a { margin-left:var(--space-2); }
+.contact-mail { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-3); padding:var(--space-4); border:var(--border-width) solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); overflow-wrap:anywhere; }
+.contact-mail strong { font-size:var(--text-lg, 18px); }

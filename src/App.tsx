@@ -362,21 +362,17 @@ function AccountSettings({ user, onUpdated }: { user: User; onUpdated: (next: Pa
     {notice && <p className={`form-message ${notice.ok ? 'ok' : ''}`}>{notice.text}</p>}
   </section>
 }
-function ContactForm({ user, onClose }: { user: User | null; onClose: () => void }) {
-  const [email, setEmail] = useState('')
-  const [text, setText] = useState('')
-  const [notice, setNotice] = useState<{ text: string; ok: boolean } | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [sent, setSent] = useState(false)
-  const submit = async (event: FormEvent) => { event.preventDefault(); if (text.trim().length < 5) return setNotice({ text: '문의 내용을 5자 이상 적어 주세요.', ok: false }); setBusy(true); try { const response = await api('contact', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reply_email: email, message: text }) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail); setNotice({ text: data.message, ok: true }); setSent(true) } catch (error) { setNotice({ text: error instanceof Error && error.message ? error.message : '보내지 못했어요. 잠시 뒤 다시 시도해 주세요.', ok: false }) } finally { setBusy(false) } }
-  return <section className="auth-card recovery-card"><p className="eyebrow">운영팀 문의</p><h1>무엇을 도와드릴까요?</h1><p className="help">궁금한 점이나 불편한 점을 적어 주세요. 운영팀이 확인하고 이메일로 답장드려요. 닉네임·비밀번호를 잊으셨다면 로그인 화면의 '닉네임·비밀번호를 잊으셨나요?'로 바로 찾을 수 있어요.</p>
-    {sent ? <><p className="form-message ok">{notice?.text}</p><div className="actions end"><button className="primary press" onClick={onClose}>돌아가기</button></div></> :
-    <form className="account-form" onSubmit={submit}>
-      {user?.email_masked ? <p className="help">답장은 가입한 이메일(<strong>{user.email_masked}</strong>)로 보내드려요.</p> : <label>답장받을 이메일<input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="name@example.com" required /></label>}
-      <label>문의 내용<textarea value={text} maxLength={1000} onChange={event => setText(event.target.value)} placeholder="예: 멘토 요청을 보냈는데 3일이 지나도 답이 없어요." /></label><small className="help-inline">{text.trim().length}/1000자</small>
-      {notice && <p className={`form-message ${notice.ok ? 'ok' : ''}`}>{notice.text}</p>}
-      <div className="actions"><button type="button" className="outline press" onClick={onClose}>돌아가기</button><button type="submit" className="primary press" disabled={busy}>{busy ? '보내는 중…' : '문의 보내기'}</button></div>
-    </form>}
+function ContactForm({ onClose }: { user?: User | null; onClose: () => void }) {
+  const [email, setEmail] = useState<string | null>(null)
+  const [copied, setCopied] = useState('')
+  useEffect(() => { api('config').then(r => r.json()).then(data => setEmail(data.contact_email || '')).catch(() => setEmail('')) }, [])
+  const copy = async () => { if (!email) return; try { await navigator.clipboard.writeText(email); setCopied('주소를 복사했어요. 메일 앱의 받는 사람 칸에 붙여넣어 주세요.') } catch { setCopied('복사가 안 되면 주소를 길게 눌러 직접 복사해 주세요.') } }
+  return <section className="auth-card recovery-card"><p className="eyebrow">운영팀 문의</p><h1>무엇을 도와드릴까요?</h1>
+    <p>궁금한 점이나 불편한 점은 아래 메일로 보내 주세요. 운영팀이 확인하고 답장드릴게요.</p>
+    <div className="contact-mail">{email === null ? <span className="help-inline">불러오는 중…</span> : email ? <><strong>{email}</strong><button type="button" className="outline press" onClick={copy}>주소 복사</button></> : <span className="help-inline">문의 메일 주소를 준비하고 있어요.</span>}</div>
+    {copied && <p className="form-message ok">{copied}</p>}
+    <p className="help">닉네임·비밀번호를 잊으셨다면 로그인 화면의 '닉네임·비밀번호를 잊으셨나요?'에서 바로 찾을 수 있어요.</p>
+    <div className="actions end"><button className="primary press" onClick={onClose}>돌아가기</button></div>
   </section>
 }
 function Stars({ value }: { value: number }) { return <span className="stars" aria-label={`별점 ${value}점`}>{'★'.repeat(value)}<span className="stars-off">{'★'.repeat(5 - value)}</span></span> }
@@ -408,7 +404,6 @@ function TeamOperations({ headers }: { headers: () => Record<string, string> }) 
   const [message, setMessage] = useState('')
   const load = async () => { try { const response = await api('team/operations', { headers: headers() }); const body = await response.json(); if (!response.ok) throw new Error(body.detail); setData(body); setMessage('') } catch (error) { setMessage(error instanceof Error ? error.message : '불러오지 못했습니다.') } }
   useEffect(() => { load() }, [])
-  const toggleDone = async (contact: any) => { try { const response = await api(`team/contacts/${contact.id}/done`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ hidden: !contact.done }) }); if (!response.ok) throw new Error((await response.json()).detail); await load() } catch (error) { setMessage(error instanceof Error ? error.message : '바꾸지 못했습니다.') } }
   const toggleHidden = async (review: any) => { try { const response = await api(`team/reviews/${review.id}/hidden`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ hidden: !review.hidden }) }); const body = await response.json(); if (!response.ok) throw new Error(body.detail); await load() } catch (error) { setMessage(error instanceof Error ? error.message : '바꾸지 못했습니다.') } }
   if (!data) return <section className="team-ai"><h2>운영 현황</h2><p className="help">{message || '불러오는 중…'}</p>{message && <div className="team-actions"><button className="outline press" onClick={load}>다시 불러오기</button></div>}</section>
   const s = data.summary
@@ -424,8 +419,6 @@ function TeamOperations({ headers }: { headers: () => Record<string, string> }) 
     <p className="ops-funnel"><span>요청 <b>{s.requests}</b></span>›<span>수락 <b>{s.accepted}</b>{pct(s.accepted, s.requests)}</span>›<span>실제 만남(완료) <b>{s.completed}</b>{pct(s.completed, s.requests)} · 양쪽 확인 <b>{s.both_confirmed}</b></span>›<span>후기 <b>{s.reviews}</b>{pct(s.reviews, s.completed)}</span></p>
     <p className="ops-funnel"><span>요청 결과 ·</span><span>대기 <b>{s.pending}</b></span><span>거절 <b>{s.rejected}</b></span><span>응답 없음 <b>{s.expired}</b></span><span>요청 취소 <b>{s.learner_cancelled}</b></span><span>수락 후 취소 <b>{s.cancelled_after_accept}</b></span></p>
     <div className="table-scroll"><table className="ops-table"><thead><tr><th>멘토</th><th>요청</th><th>수락</th><th>완료</th><th>양쪽 확인</th><th>후기</th><th>평균 별점</th><th>재이용</th></tr></thead><tbody>{data.mentors.map((m: any) => <tr key={m.name}><td>{m.name}{m.verified ? '' : <small> (확인 전)</small>}</td><td>{m.requests}</td><td>{m.accepted}</td><td>{m.completed}</td><td>{m.both_confirmed}</td><td>{m.reviews}</td><td>{m.avg_rating ? `★ ${Number(m.avg_rating).toFixed(1)}` : '-'}</td><td>{m.revisit_percent != null ? `${m.revisit_percent}%` : '-'}</td></tr>)}</tbody></table></div>
-    <h3>받은 문의 ({(data.contacts || []).filter((c: any) => !c.done).length}건 처리 전)</h3>
-    {(data.contacts || []).length ? data.contacts.map((contact: any) => <article key={contact.id} className={`review ${contact.done ? 'is-hidden' : ''}`}><div className="review-head"><strong>{contact.reply_email}</strong><small>{localDate(contact.created_at)}{contact.done ? ' · 처리 완료' : ''}</small><button className="outline press review-hide" onClick={() => toggleDone(contact)}>{contact.done ? '처리 전으로' : '처리 완료'}</button></div><p>{contact.message}</p></article>) : <p className="empty">아직 받은 문의가 없어요.</p>}
     <h3>전체 후기 ({data.reviews.length})</h3>
     {data.reviews.length ? data.reviews.map((review: any) => <article key={review.id} className={`review ${review.hidden ? 'is-hidden' : ''}`}><div className="review-head">{review.rating ? <Stars value={review.rating} /> : null}<strong>{review.mentor_name || '삭제된 멘토'}</strong>{review.revisit === 1 && <span className="badge">재이용 의향</span>}<small>{localDate(review.created_at)}{review.hidden ? ' · 숨김' : ''}</small><button className="outline press review-hide" onClick={() => toggleHidden(review)}>{review.hidden ? '다시 보이기' : '숨기기'}</button></div>{review.content && <p>{review.content}</p>}{review.tags?.length ? <div className="chips">{review.tags.map((tag: string) => <span key={tag}>{tag}</span>)}</div> : null}</article>) : <p className="empty">아직 후기가 없어요.</p>}
   </section>
