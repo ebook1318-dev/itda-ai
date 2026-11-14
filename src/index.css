@@ -223,3 +223,14 @@ input:not([type="checkbox"]):not([type="radio"]), textarea, select { max-width:1
 .account-form { display:grid; gap:var(--space-3); margin-top:var(--space-3); }
 .account-form label { display:grid; gap:var(--space-1); font-weight:700; }
 .account-form input { min-height:var(--control-h); padding:0 var(--space-3); border:var(--border-width) solid var(--color-border-strong); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-text); }
+/* 팀 화면 탭 */
+.team-head { display:flex; align-items:center; justify-content:space-between; gap:var(--space-3); }
+.team-head h1 { margin:0; }
+.team-tabs { position:sticky; top:0; z-index:4; display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:var(--space-1); margin:var(--space-4) 0; padding:var(--space-1); border-radius:var(--radius-md); background:var(--color-surface-2); }
+.team-tabs button { min-height:44px; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--color-text-2); font-weight:700; font-size:var(--text-sm); }
+.team-tabs button.active { background:var(--color-surface); color:var(--color-primary-strong); box-shadow:var(--shadow-sm); }
+.team-sub { margin:var(--space-2) 0; font:700 var(--text-xl)/var(--leading-tight) var(--font-display); }
+.team-done { margin-top:var(--space-4); }
+.team-filter { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-3); }
+.team-filter .team-mail-input { flex:1 1 200px; min-width:0; }
+.consent-inline { display:inline-flex; align-items:center; gap:var(--space-1); font-size:var(--text-sm); }
