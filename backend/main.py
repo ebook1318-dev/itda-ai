@@ -517,6 +517,7 @@ def init_db():
         add_column(conn, "users", "email_code_expires", "REAL")
         add_column(conn, "users", "email_code_sent_at", "REAL")
         add_column(conn, "users", "email_code_attempts", "INTEGER DEFAULT 0")
+        add_column(conn, "users", "pending_email", "TEXT")  # 이메일 변경: 새 주소로 보낸 코드를 확인하기 전까지 보관
         add_column(conn, "candidates", "distance", "TEXT DEFAULT '거리 정보는 공식 안내에서 확인'")
         add_column(conn, "candidates", "neighborhood", "TEXT DEFAULT '불당동'")
         add_column(conn, "candidates", "mentor_user_id", "INTEGER")
@@ -808,6 +809,10 @@ class TeamAccessInput(BaseModel):
     password: str
 class TeamStatusInput(BaseModel):
     status: str
+TEAM_NOTIFY_EMAIL = (os.environ.get("TEAM_NOTIFY_EMAIL") or "").strip()  # 새 멘토 확인 요청을 받을 팀 메일 (서버 비밀 설정)
+def notify_team(background: BackgroundTasks, subject: str, message: str):
+    if mail_enabled() and TEAM_NOTIFY_EMAIL:
+        background.add_task(send_mail, TEAM_NOTIFY_EMAIL, f"[배움잇다 AI 팀] {subject}", message + MAIL_FOOTER)
 TEAM_MAX_FAILS, TEAM_LOCK_SECONDS = 5, 900
 def require_team_password(team_password: str | None):
     if rate_hit_count("team-fail", TEAM_LOCK_SECONDS) >= TEAM_MAX_FAILS:
@@ -859,8 +864,12 @@ def public_user(row):
     keys = row.keys()
     verified = bool(row["email_verified_at"]) if "email_verified_at" in keys else False
     has_email = bool(row["email"]) if "email" in keys else False
-    return {"id": row["id"], "nickname": row["nickname"], "role": row["role"],
+    return {"id": row["id"], "nickname": row["nickname"], "role": row["role"], "email_masked": mask_email(row["email"]) if has_email else "",
             "email_verified": verified, "needs_email_verification": has_email and not verified and mail_enabled()}
+def mask_email(email: str) -> str:
+    """본인 화면에만 보여주는 가린 이메일: ab***@gmail.com"""
+    local, _, domain = (email or "").partition("@")
+    return f"{local[:2]}{'*' * max(3, len(local) - 2)}@{domain}" if domain else ""
 def contains_contact(text: str):
     """전화번호나 이메일이 들어 있는지 확인합니다 (약속 쪽지·멘토 소개글 공통)."""
     has_phone = bool(re.search(r"(?:0\d{1,2}[\s-]?)?\d{3,4}[\s-]?\d{4}", text))
@@ -1302,6 +1311,80 @@ def verify_email_code(data: EmailCodeInput, me: dict = Depends(current_user)):
                          f"인증코드가 맞지 않아요. ({left}번 더 틀리면 코드를 다시 받아야 해요)" if left > 0 else "인증코드를 5번 틀렸어요. 코드를 다시 받아 주세요.")
     return {"ok": True, "email_verified": True}
 
+# ── 내 계정: 비밀번호 바꾸기 · 이메일 바꾸기 (로그인 상태, 현재 비밀번호 확인) ─────────────
+class ChangePasswordInput(BaseModel):
+    user_id: int
+    current_password: str
+    new_password: str
+class ChangeEmailInput(BaseModel):
+    user_id: int
+    password: str
+    new_email: str
+class ChangeEmailConfirmInput(BaseModel):
+    user_id: int
+    code: str
+def check_current_password(me: dict, password: str):
+    rate_limit("account-pw", 10, 600, "비밀번호 확인을 너무 많이 시도했어요.", key=f"user:{me['id']}")
+    if not verify_password(password, me["password_hash"])[0]:
+        raise HTTPException(401, "현재 비밀번호가 맞지 않아요.")
+@app.post("/api/account/password")
+def change_password(data: ChangePasswordInput, authorization: str | None = Header(default=None), me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
+    check_current_password(me, data.current_password)
+    if len(data.new_password) < 8:
+        raise HTTPException(400, "새 비밀번호는 8자리 이상으로 정해 주세요.")
+    if data.new_password == data.current_password:
+        raise HTTPException(400, "지금 쓰는 비밀번호와 다른 비밀번호로 정해 주세요.")
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    with get_db() as conn:
+        run_batch(conn, [
+            ("UPDATE users SET password_hash=? WHERE id=?", (hash_password(data.new_password), me["id"])),
+            ("DELETE FROM sessions WHERE user_id=? AND token_hash<>?", (me["id"], token_hash(token))),  # 이 기기만 로그인 유지
+        ])
+    return {"ok": True, "message": "비밀번호를 바꿨어요. 다른 기기에서는 로그아웃됐어요."}
+@app.post("/api/account/email/change")
+def change_email_start(data: ChangeEmailInput, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
+    if not mail_enabled():
+        raise HTTPException(503, "메일 기능을 준비하고 있어요. 운영팀에 문의해 주세요.")
+    check_current_password(me, data.password)
+    email = data.new_email.strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email) or len(email) > 254:
+        raise HTTPException(400, "새 이메일 주소를 정확히 입력해 주세요.")
+    if email == (me.get("email") or ""):
+        raise HTTPException(400, "지금 쓰는 이메일과 같아요.")
+    rate_limit("email-change", 5, 3600, "이메일 바꾸기를 너무 많이 시도했어요.", key=f"user:{me['id']}")
+    with get_db() as conn:
+        if conn.execute("SELECT id FROM users WHERE role=? AND email=? AND id<>?", (me["role"], email, me["id"])).fetchone():
+            raise HTTPException(409, "이 이메일로 가입한 같은 역할의 계정이 이미 있어요.")
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        conn.execute("UPDATE users SET pending_email=?, email_code_hash=?, email_code_expires=?, email_code_sent_at=?, email_code_attempts=0 WHERE id=?",
+                     (email, hash_code(me["id"], "change:" + code), time.time() + CODE_TTL_SECONDS, time.time(), me["id"]))
+    background.add_task(send_mail, email, "[배움잇다 AI] 새 이메일 확인 코드",
+                        f"{me['nickname']}님, 이 주소로 이메일을 바꾸려면 아래 코드를 10분 안에 화면에 입력해 주세요.\n\n코드: {code}\n\n"
+                        "본인이 요청하지 않았다면 이 메일은 무시하셔도 됩니다." + MAIL_FOOTER)
+    return {"ok": True, "message": "새 이메일로 6자리 코드를 보냈어요. 메일함(스팸함 포함)을 확인해 주세요."}
+@app.post("/api/account/email/change/confirm")
+def change_email_confirm(data: ChangeEmailConfirmInput, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
+    code = "".join(ch for ch in data.code if ch.isdigit())
+    if not me.get("pending_email") or not me.get("email_code_hash") or (me.get("email_code_expires") or 0) < time.time():
+        raise HTTPException(400, "코드가 없거나 10분이 지났어요. 새 이메일로 코드를 다시 받아 주세요.")
+    attempts = (me.get("email_code_attempts") or 0) + 1
+    if attempts > CODE_MAX_ATTEMPTS:
+        raise HTTPException(400, f"코드를 {CODE_MAX_ATTEMPTS}번 틀렸어요. 코드를 다시 받아 주세요.")
+    if not hmac.compare_digest(hash_code(me["id"], "change:" + code), me["email_code_hash"]):
+        left = CODE_MAX_ATTEMPTS - attempts
+        record_then_fail("UPDATE users SET email_code_attempts=? WHERE id=?", (attempts, me["id"]), 400,
+                         f"코드가 맞지 않아요. ({left}번 더 틀리면 코드를 다시 받아야 해요)" if left > 0 else f"코드를 {CODE_MAX_ATTEMPTS}번 틀렸어요. 코드를 다시 받아 주세요.")
+    old_email, old_verified, new_email = me.get("email"), me.get("email_verified_at"), me["pending_email"]
+    with get_db() as conn:
+        conn.execute("""UPDATE users SET email=?, email_verified_at=?, pending_email=NULL, email_code_hash=NULL,
+            email_code_expires=NULL, email_code_attempts=0 WHERE id=?""", (new_email, time.strftime("%Y-%m-%d %H:%M:%S"), me["id"]))
+    if old_email and old_verified:  # 예전 주소에도 알려서, 본인이 아니면 알아챌 수 있게
+        background.add_task(send_mail, old_email, "[배움잇다 AI] 이메일이 바뀌었어요",
+                            f"{me['nickname']}님 계정의 이메일이 다른 주소로 바뀌었어요.\n본인이 바꾼 게 아니라면 운영팀에 바로 알려 주세요." + MAIL_FOOTER)
+    return {"ok": True, "email_masked": mask_email(new_email), "message": "이메일을 바꿨어요. 이제 이 주소로 알림을 받아요."}
 @app.get("/api/health")
 def health():
     return {"ok": True, "db": db_backend()}
@@ -1571,12 +1654,6 @@ def mentor_complete_learning_request(request_id: int, data: MentorRequestAction,
         notify_user(background, row["user_id"], "학습은 어떠셨어요? 후기를 남겨 주세요",
                     f"{mentor['name']} 멘토님이 학습을 완료로 표시했어요.\n배움잇다 AI의 '내 기록'에서 별점과 한 줄 후기를 남겨 주세요.")
     return {"ok": True, "status": "completed"}
-@app.post("/api/saved")
-def save_candidate(data: SaveInput, me: dict = Depends(current_user)):
-    same_user(me, data.user_id)
-    with get_db() as conn:
-        conn.execute("INSERT OR IGNORE INTO saved_candidates (user_id,candidate_id) VALUES (?,?)", (data.user_id, data.candidate_id))
-    return {"ok": True}
 @app.post("/api/reviews")
 def add_review(data: ReviewInput, background: BackgroundTasks, me: dict = Depends(current_user)):
     same_user(me, data.user_id)
@@ -1608,14 +1685,13 @@ def history(user_id: int, me: dict = Depends(current_user)):
     same_user(me, user_id)
     with get_db() as conn:
         expire_stale_requests(conn)
-        saved = conn.execute("SELECT c.* FROM saved_candidates s JOIN candidates c ON c.id=s.candidate_id WHERE s.user_id=? ORDER BY s.id DESC", (user_id,)).fetchall()
         requests = conn.execute("""SELECT lr.*, m.name AS mentor_name, s.name AS space_name, m.official_url AS mentor_url,
             (SELECT r.rating FROM reviews r WHERE r.request_id=lr.id LIMIT 1) AS review_rating,
             (SELECT COUNT(*) FROM reviews r WHERE r.request_id=lr.id) AS review_count
             FROM learning_requests lr JOIN candidates m ON m.id=lr.mentor_id LEFT JOIN candidates s ON s.id=lr.space_id
             WHERE lr.user_id=? ORDER BY lr.id DESC""", (user_id,)).fetchall()
         reviews = conn.execute("SELECT r.*, c.name FROM reviews r JOIN candidates c ON c.id=r.candidate_id WHERE r.user_id=? ORDER BY r.id DESC", (user_id,)).fetchall()
-    return {"saved": [candidate_item(row) for row in saved], "requests": [dict(row) for row in requests], "reviews": [dict(row) for row in reviews]}
+    return {"saved": [], "requests": [dict(row) for row in requests], "reviews": [dict(row) for row in reviews]}
 @app.get("/api/mentor/{user_id}")
 def mentor_profile(user_id: int, me: dict = Depends(current_user)):
     same_user(me, user_id)
@@ -1624,7 +1700,7 @@ def mentor_profile(user_id: int, me: dict = Depends(current_user)):
     return candidate_item(row) if row else None
 INTRO_MIN, INTRO_MAX = 10, 300
 @app.put("/api/mentor")
-def update_mentor(data: MentorProfile, me: dict = Depends(current_user)):
+def update_mentor(data: MentorProfile, background: BackgroundTasks, me: dict = Depends(current_user)):
     same_user(me, data.user_id)
     if not data.tools or not data.devices or not data.times or not data.neighborhoods:
         raise HTTPException(400, "가능 도구·기기·시간·동을 모두 선택해 주세요.")
@@ -1643,13 +1719,20 @@ def update_mentor(data: MentorProfile, me: dict = Depends(current_user)):
         user = conn.execute("SELECT * FROM users WHERE id=? AND role='mentor'", (data.user_id,)).fetchone()
         if not user:
             raise HTTPException(403, "멘토 계정만 수정할 수 있습니다.")
-        row = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=?", (data.user_id,)).fetchone()
+        row = conn.execute("SELECT id, verification_status FROM candidates WHERE mentor_user_id=?", (data.user_id,)).fetchone()
+        # 확인 대기 상태로 '새로' 들어올 때만 팀에 알림 (대기 중에 여러 번 저장해도 한 번만)
+        needs_team_review = bool(data.consent_confirmed) and (not row or row["verification_status"] != "pending")
         if row:
             conn.execute("UPDATE candidates SET tools=?, levels=?, devices=?, times=?, neighborhood=?, topics=?, intro=?, consent_confirmed=?, verification_status='pending', source_date=? WHERE id=?", (",".join(data.tools), ",".join(levels), ",".join(data.devices), ",".join(data.times), ",".join(data.neighborhoods), ",".join(data.topics), intro, int(data.consent_confirmed), today, row["id"]))
         else:
             conn.execute("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,topics,intro,mentor_user_id,consent_confirmed,verification_status)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", ("mentor", user["nickname"], ",".join(data.tools), ",".join(levels), ",".join(data.devices), "천안시", ",".join(data.times), "", "멘토가 직접 입력한 안내", today, "수강 전 공식 안내 페이지에서 운영 정보를 확인해 주세요.", "거리 정보는 공식 안내에서 확인", ",".join(data.neighborhoods), ",".join(data.topics), intro, data.user_id, int(data.consent_confirmed), "pending"))
         conn.execute("UPDATE users SET mentor_verification_status='pending', mentor_consent_confirmed=? WHERE id=?", (int(data.consent_confirmed), data.user_id))
+    if needs_team_review:
+        notify_team(background, "멘토 확인이 필요해요",
+                    f"{user['nickname']} 멘토가 활동 정보를 {'처음 ' if not row else '다시 '}저장했어요.\n"
+                    f"도구: {', '.join(data.tools)} · 동: {', '.join(data.neighborhoods)}\n"
+                    "사이트 로고를 5번 눌러 팀 화면에서 내용을 보고 '확인됨'으로 바꿔 주세요. 확인 전에는 추천에 나오지 않아요.")
     return {"ok": True, "verification_status": "pending"}
 @app.post("/api/team/access")
 def team_access(data: TeamAccessInput):

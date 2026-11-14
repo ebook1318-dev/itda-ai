@@ -100,6 +100,13 @@ if ! grep -q '^DEMO_MENTOR_PASSWORD=' "$ENV_FILE"; then
   printf 'DEMO_MENTOR_PASSWORD=%s\n' "$value" >> "$ENV_FILE"; unset value
   ok "예시 멘토 비밀번호 저장"
 fi
+if ! grep -q '^TEAM_NOTIFY_EMAIL=' "$ENV_FILE"; then
+  echo "  [새 설정] 새 멘토가 활동 정보를 저장하면 확인 요청 메일을 받을 '팀 메일 주소'를 적어 주세요."
+  echo "  (메일 주소를 붙여넣고 Enter. 지금 정하지 않으려면 그냥 Enter)"
+  read -r -p "  팀 알림 메일: " value < /dev/tty
+  printf 'TEAM_NOTIFY_EMAIL=%s\n' "$(echo "$value" | tr -d '[:space:]')" >> "$ENV_FILE"; unset value
+  ok "팀 알림 메일 설정 (바꾸려면 $ENV_FILE 의 TEAM_NOTIFY_EMAIL 줄 수정 후 systemctl restart $SERVICE)"
+fi
 
 step 5/7 "서비스 등록 (자동 실행)"
 cat > "/etc/systemd/system/$SERVICE.service" <<UNIT
