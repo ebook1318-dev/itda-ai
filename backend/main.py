@@ -529,6 +529,10 @@ def init_db():
         # AI 매칭에 쓰는 멘토 소개글 (수강생의 '세부 내용' 문장과 의미로 비교합니다).
         add_column(conn, "candidates", "intro", "TEXT DEFAULT ''")
         add_column(conn, "reviews", "request_id", "INTEGER")
+        # 후기·평가: 별점(만족도 1~5), 재이용 의향(1=네, 0=아니요), 운영팀 숨김 여부
+        add_column(conn, "reviews", "rating", "INTEGER")
+        add_column(conn, "reviews", "revisit", "INTEGER")
+        add_column(conn, "reviews", "hidden", "INTEGER DEFAULT 0")
         migrate_space_id_optional(conn)
         conn.execute("UPDATE users SET mentor_verification_status='pending' WHERE role='mentor' AND (mentor_verification_status IS NULL OR mentor_verification_status='not_applicable')")
         conn.execute("UPDATE users SET mentor_verification_status='not_applicable' WHERE role='learner' AND mentor_verification_status IS NULL")
@@ -729,7 +733,11 @@ class AppointmentNoteInput(BaseModel):
 class ReviewInput(BaseModel):
     user_id: int
     request_id: int
-    content: str
+    rating: int
+    revisit: bool
+    content: str = ""
+class ReviewHideInput(BaseModel):
+    hidden: bool
 class TeamAccessInput(BaseModel):
     password: str
 class TeamStatusInput(BaseModel):
@@ -1247,6 +1255,10 @@ def complete_learning_request(request_id: int, data: LearningRequestInput):
         row = conn.execute("SELECT * FROM learning_requests WHERE id=? AND user_id=?", (request_id, data.user_id)).fetchone()
         if not row:
             raise HTTPException(404, "요청 기록을 찾지 못했습니다.")
+        if row["status"] == "completed":
+            return {"ok": True, "status": "completed"}
+        if row["status"] != "confirmed":
+            raise HTTPException(400, "멘토가 수락한 학습만 완료할 수 있어요.")
         conn.execute("UPDATE learning_requests SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE id=?", (request_id,))
     return {"ok": True, "status": "completed"}
 @app.post("/api/saved")
@@ -1255,20 +1267,33 @@ def save_candidate(data: SaveInput):
         conn.execute("INSERT OR IGNORE INTO saved_candidates (user_id,candidate_id) VALUES (?,?)", (data.user_id, data.candidate_id))
     return {"ok": True}
 @app.post("/api/reviews")
-def add_review(data: ReviewInput):
-    if not data.content.strip():
-        raise HTTPException(400, "후기 내용을 입력해 주세요.")
+def add_review(data: ReviewInput, background: BackgroundTasks):
+    content = data.content.strip()
+    if not 1 <= data.rating <= 5:
+        raise HTTPException(400, "별점을 1~5개 중에서 골라 주세요.")
+    if len(content) > 200:
+        raise HTTPException(400, "후기는 200자까지 쓸 수 있어요.")
+    if content and contains_contact(content):
+        raise HTTPException(400, "후기에는 전화번호나 이메일을 적을 수 없어요.")
     with get_db() as conn:
         request = conn.execute("SELECT * FROM learning_requests WHERE id=? AND user_id=? AND status='completed'", (data.request_id, data.user_id)).fetchone()
         if not request:
             raise HTTPException(400, "학습을 마친 뒤에만 이용 후기를 남길 수 있습니다.")
-        conn.execute("INSERT INTO reviews (user_id,candidate_id,request_id,content) VALUES (?,?,?,?)", (data.user_id, request["mentor_id"], data.request_id, data.content.strip()))
+        if conn.execute("SELECT id FROM reviews WHERE request_id=?", (data.request_id,)).fetchone():
+            raise HTTPException(400, "이 학습에는 이미 후기를 남겼어요.")
+        conn.execute("INSERT INTO reviews (user_id,candidate_id,request_id,content,rating,revisit) VALUES (?,?,?,?,?,?)",
+                     (data.user_id, request["mentor_id"], data.request_id, content, data.rating, 1 if data.revisit else 0))
+        mentor_uid = mentor_user_id(conn, request["mentor_id"])
+    notify_user(background, mentor_uid, "새 이용 후기가 도착했어요",
+                "수강생이 함께한 학습에 후기를 남겼어요.\n배움잇다 AI에 로그인해 '받은 이용 후기'에서 확인해 주세요.")
     return {"ok": True}
 @app.get("/api/history/{user_id}")
 def history(user_id: int):
     with get_db() as conn:
         saved = conn.execute("SELECT c.* FROM saved_candidates s JOIN candidates c ON c.id=s.candidate_id WHERE s.user_id=? ORDER BY s.id DESC", (user_id,)).fetchall()
-        requests = conn.execute("""SELECT lr.*, m.name AS mentor_name, s.name AS space_name, m.official_url AS mentor_url
+        requests = conn.execute("""SELECT lr.*, m.name AS mentor_name, s.name AS space_name, m.official_url AS mentor_url,
+            (SELECT r.rating FROM reviews r WHERE r.request_id=lr.id LIMIT 1) AS review_rating,
+            (SELECT COUNT(*) FROM reviews r WHERE r.request_id=lr.id) AS review_count
             FROM learning_requests lr JOIN candidates m ON m.id=lr.mentor_id LEFT JOIN candidates s ON s.id=lr.space_id
             WHERE lr.user_id=? ORDER BY lr.id DESC""", (user_id,)).fetchall()
         reviews = conn.execute("SELECT r.*, c.name FROM reviews r JOIN candidates c ON c.id=r.candidate_id WHERE r.user_id=? ORDER BY r.id DESC", (user_id,)).fetchall()
@@ -1422,10 +1447,66 @@ def mentor_reviews(user_id: int):
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (user_id,)).fetchone()
         if not mentor:
             return []
-        rows = conn.execute("""SELECT r.id, r.content, r.created_at, CASE WHEN u.withdrawn_at IS NOT NULL THEN '탈퇴한 회원' ELSE u.nickname END AS learner_name
-            FROM reviews r JOIN users u ON u.id=r.user_id
-            WHERE r.candidate_id=? ORDER BY r.id DESC""", (mentor["id"],)).fetchall()
+        # 솔직한 후기를 위해 멘토에게는 수강생 닉네임을 보여주지 않습니다(익명). 운영팀이 숨긴 후기는 빼요.
+        rows = conn.execute("""SELECT r.id, r.content, r.rating, r.revisit, r.created_at, '익명 수강생' AS learner_name
+            FROM reviews r WHERE r.candidate_id=? AND COALESCE(r.hidden,0)=0 ORDER BY r.id DESC""", (mentor["id"],)).fetchall()
     return [dict(row) for row in rows]
+# ── 팀 전용: 운영 현황 (기획서의 '시범 운영에서 확인할 지표') · 후기 관리 ─────────────
+def _avg(values):
+    values = [v for v in values if v is not None]
+    return round(sum(values) / len(values), 1) if values else None
+def _percent(values):
+    values = [v for v in values if v is not None]
+    return round(100 * sum(1 for v in values if v) / len(values)) if values else None
+@app.get("/api/team/operations")
+def team_operations(x_team_password: str | None = Header(default=None)):
+    require_team_password(x_team_password)
+    with get_db() as conn:
+        mentors = conn.execute("SELECT id, name, verification_status FROM candidates WHERE kind='mentor' ORDER BY id").fetchall()
+        spaces = conn.execute("SELECT id, name FROM candidates WHERE kind='space' ORDER BY id").fetchall()
+        requests = conn.execute("SELECT id, mentor_id, status FROM learning_requests").fetchall()
+        reviews = conn.execute("""SELECT r.id, r.candidate_id, r.content, r.rating, r.revisit, COALESCE(r.hidden,0) AS hidden, r.created_at,
+            c.name AS mentor_name FROM reviews r LEFT JOIN candidates c ON c.id=r.candidate_id ORDER BY r.id DESC""").fetchall()
+    accepted = ("confirmed", "completed")
+    rated = [r for r in reviews if r["rating"] is not None]
+    space_rows = []
+    for row in spaces:
+        if row["name"] in EXCLUDED_SPACE_NAMES:
+            continue
+        geo = _space_geo.get(row["name"])
+        space_rows.append({"location": bool(geo and geo.get("source") in ("manual", "verified")) or row["name"] in KNOWN_SPACE_COORDS,
+                           "facility": row["name"] in _space_facility})
+    mentor_table = []
+    for m in mentors:
+        reqs = [r for r in requests if r["mentor_id"] == m["id"]]
+        revs = [r for r in rated if r["candidate_id"] == m["id"]]
+        mentor_table.append({"name": m["name"], "verified": m["verification_status"] == "verified",
+                             "requests": len(reqs), "accepted": sum(1 for r in reqs if r["status"] in accepted),
+                             "completed": sum(1 for r in reqs if r["status"] == "completed"),
+                             "reviews": len(revs), "avg_rating": _avg([r["rating"] for r in revs]),
+                             "revisit_percent": _percent([r["revisit"] for r in revs])})
+    return {
+        "summary": {
+            "mentors": len(mentors), "mentors_verified": sum(1 for m in mentors if m["verification_status"] == "verified"),
+            "spaces": len(space_rows), "spaces_location_checked": sum(1 for s in space_rows if s["location"]),
+            "spaces_facility_checked": sum(1 for s in space_rows if s["facility"]),
+            "requests": len(requests), "accepted": sum(1 for r in requests if r["status"] in accepted),
+            "completed": sum(1 for r in requests if r["status"] == "completed"),
+            "reviews": len(rated), "avg_rating": _avg([r["rating"] for r in rated]),
+            "revisit_percent": _percent([r["revisit"] for r in rated]),
+        },
+        "mentors": sorted(mentor_table, key=lambda m: (-m["requests"], m["name"])),
+        "reviews": [dict(r) for r in reviews],
+    }
+@app.put("/api/team/reviews/{review_id}/hidden")
+def team_hide_review(review_id: int, data: ReviewHideInput, x_team_password: str | None = Header(default=None)):
+    require_team_password(x_team_password)
+    with get_db() as conn:
+        if not conn.execute("SELECT id FROM reviews WHERE id=?", (review_id,)).fetchone():
+            raise HTTPException(404, "후기를 찾지 못했습니다.")
+        conn.execute("UPDATE reviews SET hidden=? WHERE id=?", (1 if data.hidden else 0, review_id))
+    return {"ok": True}
+
 # ── 팀 전용: AI 연결 확인 · 추천 정확도 테스트 ───────────────────────────────
 @app.get("/api/team/ai-check")
 def team_ai_check(x_team_password: str | None = Header(default=None)):

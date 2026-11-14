@@ -157,3 +157,36 @@ input:not([type="checkbox"]):not([type="radio"]), textarea, select { max-width:1
 .facility-edit select { min-height:36px; padding:0 var(--space-2); border:var(--border-width) solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-text); }
 .space-admin-list, .space-admin, .team-ai { grid-template-columns:minmax(0, 1fr); }
 .map-link { flex:none; white-space:nowrap; }
+/* 후기·평가 */
+.stars { color:#e3a008; letter-spacing:1px; white-space:nowrap; }
+.stars-off { color:var(--color-border-strong); }
+.star-picker { display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-1); }
+.star { width:48px; height:48px; padding:0; border:0; background:transparent; color:var(--color-border-strong); font-size:36px; line-height:1; }
+.star.on { color:#e3a008; }
+.star-label { margin-left:var(--space-2); color:var(--color-text-2); font-weight:700; }
+.review-form h1 { font:700 var(--text-2xl)/var(--leading-tight) var(--font-display); margin:0 0 var(--space-3); }
+.review-form .intro-field small { font-weight:400; }
+.review-done { display:inline-flex !important; align-items:center; gap:var(--space-2); color:var(--color-success) !important; font-weight:700; }
+.review-summary { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:var(--space-2); margin:var(--space-3) 0; }
+.review-summary span { display:grid; gap:2px; padding:var(--space-3); border-radius:var(--radius-md); background:var(--color-surface-2); color:var(--color-text-2); font-size:var(--text-xs); text-align:center; }
+.review-summary b { color:var(--color-text); font-size:var(--text-xl); }
+.review-head { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1) var(--space-2); }
+.review-head small { color:var(--color-muted); }
+.review p { margin:var(--space-2) 0 0; overflow-wrap:anywhere; }
+.review.is-hidden { opacity:.5; }
+.review-hide { min-height:36px; margin-left:auto; font-size:var(--text-sm); }
+.ops-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:var(--space-2); }
+.ops-grid > div { display:grid; gap:2px; padding:var(--space-3); border:var(--border-width) solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); min-width:0; }
+.ops-grid small, .ops-grid span { color:var(--color-muted); font-size:var(--text-xs); }
+.ops-grid b { font-size:var(--text-2xl); }
+.ops-funnel { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); margin:0; color:var(--color-muted); font-size:var(--text-sm); }
+.ops-funnel span { color:var(--color-text-2); }
+.ops-table { width:100%; min-width:520px; border-collapse:collapse; font-size:var(--text-sm); }
+.ops-table th, .ops-table td { padding:var(--space-2); border-bottom:var(--border-width) solid var(--color-border); text-align:left; }
+.ops-table th { color:var(--color-muted); font-size:var(--text-xs); }
+.team-ai h3 { margin:var(--space-2) 0 0; }
+@media(max-width:640px) { .review-summary b { font-size:var(--text-lg, 18px); } }
+.history-item .stars, .history-item .stars-off, .review-done .stars { display:inline !important; color:#e3a008; }
+.history-item .stars-off { color:var(--color-border-strong); }
+.review-form h1, .history-page h1 { word-break:keep-all; }
+@media(max-width:640px) { .ops-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } .ops-grid b { font-size:var(--text-xl); } }
