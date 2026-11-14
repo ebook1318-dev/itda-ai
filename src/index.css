@@ -190,3 +190,11 @@ input:not([type="checkbox"]):not([type="radio"]), textarea, select { max-width:1
 .history-item .stars-off { color:var(--color-border-strong); }
 .review-form h1, .history-page h1 { word-break:keep-all; }
 @media(max-width:640px) { .ops-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } .ops-grid b { font-size:var(--text-xl); } }
+/* 탭으로 나눈 멘토 화면 · 내 기록 묶음 */
+.bottom-tabs.three { grid-template-columns:repeat(3, 1fr); }
+.result-section h2 .count { margin-left:var(--space-2); vertical-align:middle; }
+.result-section.highlight { border-color:var(--color-primary); }
+.past-list summary { cursor:pointer; font:700 var(--text-xl)/var(--leading-tight) var(--font-display); }
+.past-list[open] summary { margin-bottom:var(--space-2); }
+.withdraw-link { margin:var(--space-6) 0 var(--space-2); text-align:center; }
+.withdraw-link button { border:0; background:transparent; color:var(--color-muted); font-size:var(--text-sm); text-decoration:underline; }
