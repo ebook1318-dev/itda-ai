@@ -9,7 +9,7 @@ import json
 import urllib.request
 import urllib.error
 import time
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends
 import secrets
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -476,6 +476,12 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL,
             request_id INTEGER, content TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            nickname_key TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, locked_until REAL
+        );
         CREATE TABLE IF NOT EXISTS space_geo (
             name TEXT PRIMARY KEY, lat REAL NOT NULL, lng REAL NOT NULL, source TEXT NOT NULL, note TEXT, updated_at TEXT
         );
@@ -748,6 +754,42 @@ def require_team_password(team_password: str | None):
         raise HTTPException(401, "팀 비밀번호가 맞지 않습니다.")
 EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 WITHDRAWN_PREFIX = "탈퇴한 회원 "
+# ── 로그인 출입증(세션 토큰) ─────────────────────────────────────────────
+# 로그인하면 길고 무작위인 토큰을 주고, 서버에는 그 해시만 저장합니다. 이후 요청은 브라우저가 보내는
+# 회원 번호가 아니라 이 토큰으로 누구인지 판단합니다 (번호만 바꿔 다른 사람인 척하는 것을 막음).
+SESSION_DAYS = 30
+LOGIN_MAX_FAILS = 5
+LOGIN_LOCK_SECONDS = 600
+def record_then_fail(sql: str, params: tuple, status: int, message: str):
+    """실패 기록(틀린 횟수 등)을 먼저 저장한 뒤 오류를 돌려줍니다.
+    (같은 DB 블록 안에서 오류를 내면 SQLite가 기록까지 되돌리기 때문)"""
+    with get_db() as conn:
+        conn.execute(sql, params)
+    raise HTTPException(status, message)
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+def create_session(conn, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    conn.execute("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)",
+                 (token_hash(token), user_id, now, now + SESSION_DAYS * 86400))
+    return token
+def current_user(authorization: str | None = Header(default=None)):
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(401, "로그인이 필요해요. 다시 로그인해 주세요.")
+    with get_db() as conn:
+        row = conn.execute("""SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
+            WHERE s.token_hash=? AND s.expires_at>? AND u.withdrawn_at IS NULL""", (token_hash(token), time.time())).fetchone()
+    if not row:
+        raise HTTPException(401, "로그인이 끝났어요. 다시 로그인해 주세요.")
+    return dict(row)
+def same_user(me: dict, user_id) -> None:
+    if me["id"] != user_id:
+        raise HTTPException(403, "다른 사람의 정보에는 접근할 수 없어요.")
+def logged_in(conn, row):
+    """로그인·가입 성공 응답: 회원 정보 + 출입증"""
+    return {**public_user(row), "token": create_session(conn, row["id"])}
 def public_user(row):
     keys = row.keys()
     verified = bool(row["email_verified_at"]) if "email_verified_at" in keys else False
@@ -1105,7 +1147,8 @@ class EmailCodeInput(BaseModel):
     code: str = ""
 
 @app.post("/api/account/email/send-code")
-def send_email_code(data: EmailCodeInput, background: BackgroundTasks):
+def send_email_code(data: EmailCodeInput, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     if not mail_enabled():
         raise HTTPException(503, "메일 알림을 준비하고 있어요. 조금만 기다려 주세요.")
     with get_db() as conn:
@@ -1118,7 +1161,8 @@ def send_email_code(data: EmailCodeInput, background: BackgroundTasks):
     return {"ok": True}
 
 @app.post("/api/account/email/verify")
-def verify_email_code(data: EmailCodeInput):
+def verify_email_code(data: EmailCodeInput, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     code = "".join(ch for ch in data.code if ch.isdigit())
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE id=? AND withdrawn_at IS NULL", (data.user_id,)).fetchone()
@@ -1131,12 +1175,14 @@ def verify_email_code(data: EmailCodeInput):
         attempts = (user["email_code_attempts"] or 0) + 1
         if attempts > CODE_MAX_ATTEMPTS:
             raise HTTPException(400, "인증코드를 5번 틀렸어요. 코드를 다시 받아 주세요.")
-        if not hmac.compare_digest(hash_code(user["id"], code), user["email_code_hash"]):
-            conn.execute("UPDATE users SET email_code_attempts=? WHERE id=?", (attempts, user["id"]))
-            left = CODE_MAX_ATTEMPTS - attempts
-            raise HTTPException(400, f"인증코드가 맞지 않아요. (남은 기회 {left}번)" if left > 0 else "인증코드를 5번 틀렸어요. 코드를 다시 받아 주세요.")
-        conn.execute("UPDATE users SET email_verified_at=?, email_code_hash=NULL, email_code_expires=NULL, email_code_attempts=0 WHERE id=?",
+        wrong = not hmac.compare_digest(hash_code(user["id"], code), user["email_code_hash"])
+        if not wrong:
+            conn.execute("UPDATE users SET email_verified_at=?, email_code_hash=NULL, email_code_expires=NULL, email_code_attempts=0 WHERE id=?",
                      (time.strftime("%Y-%m-%d %H:%M:%S"), user["id"]))
+    if wrong:
+        left = CODE_MAX_ATTEMPTS - attempts
+        record_then_fail("UPDATE users SET email_code_attempts=? WHERE id=?", (attempts, user["id"]), 400,
+                         f"인증코드가 맞지 않아요. ({left}번 더 틀리면 코드를 다시 받아야 해요)" if left > 0 else "인증코드를 5번 틀렸어요. 코드를 다시 받아 주세요.")
     return {"ok": True, "email_verified": True}
 
 @app.get("/api/health")
@@ -1166,9 +1212,10 @@ def signup(data: AuthInput, background: BackgroundTasks):
             raise HTTPException(409, "이미 사용 중인 닉네임입니다.")
         if mail_enabled():
             issue_email_code(conn, row, background)
-    return public_user(row)
+        return logged_in(conn, row)
 @app.post("/api/account/withdraw")
-def withdraw(data: WithdrawInput):
+def withdraw(data: WithdrawInput, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     """회원 탈퇴: 이메일·비밀번호는 즉시 삭제하고 닉네임은 익명으로 바꿉니다.
     요청·후기·쪽지 기록은 상대방 화면에서 갑자기 사라지지 않도록 '탈퇴한 회원'으로 남깁니다."""
     with get_db() as conn:
@@ -1181,6 +1228,7 @@ def withdraw(data: WithdrawInput):
             ("UPDATE users SET nickname=?, nickname_key=?, password_hash=?, email=NULL, privacy_consent_at=NULL, email_verified_at=NULL, email_code_hash=NULL, email_code_expires=NULL, email_code_sent_at=NULL, withdrawn_at=?, mentor_consent_confirmed=0 WHERE id=?",
              (anon, normalize_nickname(anon), unusable, time.strftime("%Y-%m-%d %H:%M:%S"), user["id"])),
             ("DELETE FROM saved_candidates WHERE user_id=?", (user["id"],)),
+            ("DELETE FROM sessions WHERE user_id=?", (user["id"],)),
             ("UPDATE learning_requests SET status='cancelled' WHERE user_id=? AND status='pending'", (user["id"],)),
         ]
         if user["role"] == "mentor":
@@ -1196,14 +1244,120 @@ def withdraw(data: WithdrawInput):
 @app.post("/api/auth/login")
 def login(data: LoginInput):
     nickname_key = normalize_nickname(data.nickname)
+    now = time.time()
     with get_db() as conn:
+        attempt = conn.execute("SELECT * FROM login_attempts WHERE nickname_key=?", (nickname_key,)).fetchone()
+        if attempt and (attempt["locked_until"] or 0) > now:
+            minutes = int(((attempt["locked_until"] or 0) - now) // 60) + 1
+            raise HTTPException(429, f"비밀번호를 {LOGIN_MAX_FAILS}번 틀려서 로그인을 잠시 막아 두었어요. {minutes}분 뒤에 다시 시도하거나, 아래 '비밀번호 찾기'로 새 비밀번호를 만들어 주세요.")
         row = conn.execute("SELECT * FROM users WHERE nickname_key=? AND role=? AND withdrawn_at IS NULL", (nickname_key, data.role)).fetchone()
         ok, needs_upgrade = verify_password(data.password, row["password_hash"]) if row else (False, False)
         if not ok:
-            raise HTTPException(401, "닉네임·비밀번호·역할을 확인해 주세요.")
-        if needs_upgrade:  # 예전 방식(SHA-256)으로 저장된 비밀번호를 새 방식으로 바꿔 저장
-            conn.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(data.password), row["id"]))
-    return public_user(row)
+            other = conn.execute("SELECT * FROM users WHERE nickname_key=? AND role<>? AND withdrawn_at IS NULL", (nickname_key, data.role)).fetchone()
+            if other and verify_password(data.password, other["password_hash"])[0]:
+                # 비밀번호는 맞는데 역할만 다른 경우 (자주 하는 실수) — 실패로 세지 않고 알려줌
+                role_label = "멘토" if other["role"] == "mentor" else "수강생"
+                raise HTTPException(401, f"이 닉네임은 '{role_label}'(으)로 가입되어 있어요. 이용 역할을 '{role_label}'(으)로 바꿔서 다시 로그인해 주세요.")
+            fails = (attempt["fails"] if attempt else 0) + 1
+            failed = fails
+        else:
+            failed = 0
+            if attempt:
+                conn.execute("DELETE FROM login_attempts WHERE nickname_key=?", (nickname_key,))
+            if needs_upgrade:  # 예전 방식(SHA-256)으로 저장된 비밀번호를 새 방식으로 바꿔 저장
+                conn.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(data.password), row["id"]))
+            return logged_in(conn, row)
+    if failed >= LOGIN_MAX_FAILS:
+        record_then_fail("INSERT OR REPLACE INTO login_attempts (nickname_key, fails, locked_until) VALUES (?,?,?)", (nickname_key, 0, now + LOGIN_LOCK_SECONDS),
+                         429, f"비밀번호를 {LOGIN_MAX_FAILS}번 틀려서 {LOGIN_LOCK_SECONDS // 60}분 동안 로그인을 막아 두었어요. 기억나지 않으면 아래 '비밀번호 찾기'로 새 비밀번호를 만들어 주세요.")
+    left = LOGIN_MAX_FAILS - failed
+    record_then_fail("INSERT OR REPLACE INTO login_attempts (nickname_key, fails, locked_until) VALUES (?,?,NULL)", (nickname_key, failed),
+                     401, f"닉네임·비밀번호·역할 중 맞지 않는 것이 있어요. ({left}번 더 틀리면 {LOGIN_LOCK_SECONDS // 60}분 동안 로그인할 수 없어요)")
+@app.post("/api/auth/logout")
+def logout(authorization: str | None = Header(default=None)):
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    if token:
+        with get_db() as conn:
+            conn.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(token),))
+    return {"ok": True}
+@app.get("/api/auth/me")
+def auth_me(me: dict = Depends(current_user)):
+    return public_user(me)
+# ── 계정 찾기: 닉네임 찾기 · 비밀번호 재설정 ────────────────────────────────
+class FindNicknameInput(BaseModel):
+    email: str
+class ResetCodeInput(BaseModel):
+    nickname: str
+class ResetConfirmInput(BaseModel):
+    nickname: str
+    code: str
+    new_password: str
+_recovery_sent: dict[str, float] = {}
+def recovery_throttle(key: str):
+    now = time.time()
+    if now - _recovery_sent.get(key, 0) < CODE_RESEND_SECONDS:
+        wait = int(CODE_RESEND_SECONDS - (now - _recovery_sent[key])) + 1
+        raise HTTPException(429, f"{wait}초 뒤에 다시 시도해 주세요.")
+    _recovery_sent[key] = now
+RECOVERY_SENT_MESSAGE = "가입된 계정이 있다면 메일을 보냈어요. 메일함(스팸함 포함)을 확인해 주세요."
+@app.post("/api/auth/find-nickname")
+def find_nickname(data: FindNicknameInput, background: BackgroundTasks):
+    if not mail_enabled():
+        raise HTTPException(503, "메일 기능을 준비하고 있어요. 운영팀에 문의해 주세요.")
+    email = data.email.strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email):
+        raise HTTPException(400, "가입할 때 쓴 이메일 주소를 정확히 입력해 주세요.")
+    recovery_throttle("email:" + email)
+    with get_db() as conn:
+        rows = conn.execute("SELECT nickname, role FROM users WHERE email=? AND withdrawn_at IS NULL", (email,)).fetchall()
+    if rows:  # 가입 여부를 알려주지 않으려고, 계정이 없어도 화면 안내는 똑같이 보여줍니다.
+        lines = "\n".join(f"- {'멘토' if r['role'] == 'mentor' else '수강생'}: {r['nickname']}" for r in rows)
+        background.add_task(send_mail, email, "[배움잇다 AI] 닉네임 안내",
+                            f"이 이메일로 가입된 배움잇다 AI 계정입니다.\n\n{lines}\n\n본인이 요청하지 않았다면 이 메일은 무시하셔도 됩니다." + MAIL_FOOTER)
+    return {"ok": True, "message": RECOVERY_SENT_MESSAGE}
+@app.post("/api/auth/reset/send-code")
+def reset_send_code(data: ResetCodeInput, background: BackgroundTasks):
+    if not mail_enabled():
+        raise HTTPException(503, "메일 기능을 준비하고 있어요. 운영팀에 문의해 주세요.")
+    key = normalize_nickname(data.nickname)
+    if not key:
+        raise HTTPException(400, "닉네임을 입력해 주세요.")
+    recovery_throttle("reset:" + key)
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE nickname_key=? AND withdrawn_at IS NULL", (key,)).fetchone()
+        if user and user["email"] and user["email_verified_at"]:
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            conn.execute("UPDATE users SET email_code_hash=?, email_code_expires=?, email_code_sent_at=?, email_code_attempts=0 WHERE id=?",
+                         (hash_code(user["id"], "reset:" + code), time.time() + CODE_TTL_SECONDS, time.time(), user["id"]))
+            background.add_task(send_mail, user["email"], "[배움잇다 AI] 비밀번호 재설정 코드",
+                                f"{user['nickname']}님, 비밀번호 재설정 코드입니다.\n\n코드: {code}\n\n10분 안에 화면에 입력하고 새 비밀번호를 정해 주세요.\n"
+                                "본인이 요청하지 않았다면 이 메일은 무시하셔도 됩니다. 비밀번호는 바뀌지 않아요." + MAIL_FOOTER)
+    return {"ok": True, "message": "이메일 인증을 마친 계정이라면 재설정 코드를 보냈어요. 메일함(스팸함 포함)을 확인해 주세요."}
+@app.post("/api/auth/reset/confirm")
+def reset_confirm(data: ResetConfirmInput):
+    key = normalize_nickname(data.nickname)
+    code = "".join(ch for ch in data.code if ch.isdigit())
+    if len(data.new_password) < 8:
+        raise HTTPException(400, "새 비밀번호는 8자리 이상으로 정해 주세요.")
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE nickname_key=? AND withdrawn_at IS NULL", (key,)).fetchone()
+        if not user or not user["email_code_hash"] or (user["email_code_expires"] or 0) < time.time():
+            raise HTTPException(400, "코드가 없거나 10분이 지났어요. 코드를 다시 받아 주세요.")
+        attempts = (user["email_code_attempts"] or 0) + 1
+        if attempts > CODE_MAX_ATTEMPTS:
+            raise HTTPException(400, f"코드를 {CODE_MAX_ATTEMPTS}번 틀렸어요. 코드를 다시 받아 주세요.")
+        wrong = not hmac.compare_digest(hash_code(user["id"], "reset:" + code), user["email_code_hash"])
+        if not wrong:
+            run_batch(conn, [
+            ("UPDATE users SET password_hash=?, email_code_hash=NULL, email_code_expires=NULL, email_code_attempts=0 WHERE id=?", (hash_password(data.new_password), user["id"])),
+            ("DELETE FROM sessions WHERE user_id=?", (user["id"],)),  # 모든 기기에서 로그아웃
+            ("DELETE FROM login_attempts WHERE nickname_key=?", (key,)),
+            ])
+    if wrong:
+        left = CODE_MAX_ATTEMPTS - attempts
+        record_then_fail("UPDATE users SET email_code_attempts=? WHERE id=?", (attempts, user["id"]), 400,
+                         f"코드가 맞지 않아요. ({left}번 더 틀리면 코드를 다시 받아야 해요)" if left > 0 else f"코드를 {CODE_MAX_ATTEMPTS}번 틀렸어요. 코드를 다시 받아 주세요.")
+    return {"ok": True, "message": "새 비밀번호로 바꿨어요. 다른 기기에서는 모두 로그아웃됐어요. 새 비밀번호로 로그인해 주세요."}
 @app.post("/api/recommendations")
 def recommendations(request: RecommendationRequest):
     with get_db() as conn:
@@ -1229,7 +1383,8 @@ def recommendations(request: RecommendationRequest):
         "ranking": {"mentor": "ai" if ai_used else "rule"},
     }
 @app.post("/api/learning-requests")
-def create_learning_request(data: LearningRequestInput, background: BackgroundTasks):
+def create_learning_request(data: LearningRequestInput, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     with get_db() as conn:
         user = conn.execute("SELECT id FROM users WHERE id=? AND role='learner'", (data.user_id,)).fetchone()
         mentor = conn.execute("SELECT id FROM candidates WHERE id=? AND kind='mentor' AND verification_status='verified'", (data.mentor_id,)).fetchone()
@@ -1260,7 +1415,8 @@ def mark_learning_done(conn, row, side: str):
     conn.execute(f"UPDATE learning_requests SET status='completed', completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP), {column}=COALESCE({column}, CURRENT_TIMESTAMP) WHERE id=?", (row["id"],))
     return first
 @app.post("/api/learning-requests/{request_id}/complete")
-def complete_learning_request(request_id: int, data: LearningRequestInput, background: BackgroundTasks):
+def complete_learning_request(request_id: int, data: LearningRequestInput, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     with get_db() as conn:
         row = conn.execute("SELECT * FROM learning_requests WHERE id=? AND user_id=?", (request_id, data.user_id)).fetchone()
         if not row:
@@ -1272,7 +1428,8 @@ def complete_learning_request(request_id: int, data: LearningRequestInput, backg
                     f"{learner}님이 '학습을 마쳤어요'를 눌렀어요.\n배움잇다 AI의 '요청' 탭 > 지난 학습에서 '완료 확인'을 눌러 주세요.")
     return {"ok": True, "status": "completed"}
 @app.post("/api/learning-requests/{request_id}/mentor-complete")
-def mentor_complete_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks):
+def mentor_complete_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     with get_db() as conn:
         mentor = conn.execute("SELECT id, name FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (data.user_id,)).fetchone()
         row = conn.execute("SELECT * FROM learning_requests WHERE id=?", (request_id,)).fetchone()
@@ -1284,12 +1441,14 @@ def mentor_complete_learning_request(request_id: int, data: MentorRequestAction,
                     f"{mentor['name']} 멘토님이 학습을 완료로 표시했어요.\n배움잇다 AI의 '내 기록'에서 별점과 한 줄 후기를 남겨 주세요.")
     return {"ok": True, "status": "completed"}
 @app.post("/api/saved")
-def save_candidate(data: SaveInput):
+def save_candidate(data: SaveInput, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     with get_db() as conn:
         conn.execute("INSERT OR IGNORE INTO saved_candidates (user_id,candidate_id) VALUES (?,?)", (data.user_id, data.candidate_id))
     return {"ok": True}
 @app.post("/api/reviews")
-def add_review(data: ReviewInput, background: BackgroundTasks):
+def add_review(data: ReviewInput, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     content = data.content.strip()
     if not 1 <= data.rating <= 5:
         raise HTTPException(400, "별점을 1~5개 중에서 골라 주세요.")
@@ -1314,7 +1473,8 @@ def add_review(data: ReviewInput, background: BackgroundTasks):
                 "수강생이 함께한 학습에 후기를 남겼어요.\n배움잇다 AI에 로그인해 '받은 이용 후기'에서 확인해 주세요.")
     return {"ok": True}
 @app.get("/api/history/{user_id}")
-def history(user_id: int):
+def history(user_id: int, me: dict = Depends(current_user)):
+    same_user(me, user_id)
     with get_db() as conn:
         saved = conn.execute("SELECT c.* FROM saved_candidates s JOIN candidates c ON c.id=s.candidate_id WHERE s.user_id=? ORDER BY s.id DESC", (user_id,)).fetchall()
         requests = conn.execute("""SELECT lr.*, m.name AS mentor_name, s.name AS space_name, m.official_url AS mentor_url,
@@ -1325,13 +1485,15 @@ def history(user_id: int):
         reviews = conn.execute("SELECT r.*, c.name FROM reviews r JOIN candidates c ON c.id=r.candidate_id WHERE r.user_id=? ORDER BY r.id DESC", (user_id,)).fetchall()
     return {"saved": [candidate_item(row) for row in saved], "requests": [dict(row) for row in requests], "reviews": [dict(row) for row in reviews]}
 @app.get("/api/mentor/{user_id}")
-def mentor_profile(user_id: int):
+def mentor_profile(user_id: int, me: dict = Depends(current_user)):
+    same_user(me, user_id)
     with get_db() as conn:
         row = conn.execute("SELECT * FROM candidates WHERE mentor_user_id=? LIMIT 1", (user_id,)).fetchone()
     return candidate_item(row) if row else None
 INTRO_MIN, INTRO_MAX = 10, 300
 @app.put("/api/mentor")
-def update_mentor(data: MentorProfile):
+def update_mentor(data: MentorProfile, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     if not data.tools or not data.devices or not data.times or not data.neighborhoods:
         raise HTTPException(400, "가능 도구·기기·시간·동을 모두 선택해 주세요.")
     if not data.topics:
@@ -1390,7 +1552,8 @@ def update_mentor_status(user_id: int, data: TeamStatusInput, x_team_password: s
             conn.execute("UPDATE candidates SET consent_confirmed=?, verification_status=? WHERE mentor_user_id=?", (consent, verification, user_id))
     return {"ok": True, "status": data.status}
 @app.get("/api/mentor-requests/{user_id}")
-def mentor_requests(user_id: int):
+def mentor_requests(user_id: int, me: dict = Depends(current_user)):
+    same_user(me, user_id)
     with get_db() as conn:
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (user_id,)).fetchone()
         if not mentor:
@@ -1400,7 +1563,8 @@ def mentor_requests(user_id: int):
             WHERE lr.mentor_id=? ORDER BY lr.id DESC""", (mentor["id"],)).fetchall()
     return [{**dict(row), "devices": as_list(row["devices"] or ""), "time_slots": as_list(row["time_slots"] or ""), "neighborhoods": as_list(row["neighborhoods"] or "")} for row in rows]
 @app.post("/api/learning-requests/{request_id}/cancel")
-def cancel_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks):
+def cancel_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     with get_db() as conn:
         request = conn.execute("SELECT * FROM learning_requests WHERE id=? AND user_id=?", (request_id, data.user_id)).fetchone()
         if not request:
@@ -1412,7 +1576,8 @@ def cancel_learning_request(request_id: int, data: MentorRequestAction, backgrou
     notify_user(background, mentor_uid, "학습 요청이 취소됐어요", f"{learner}님이 보낸 학습 요청을 취소했어요.")
     return {"ok": True, "status": "cancelled"}
 @app.post("/api/learning-requests/{request_id}/reject")
-def reject_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks):
+def reject_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     with get_db() as conn:
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (data.user_id,)).fetchone()
         request = conn.execute("SELECT * FROM learning_requests WHERE id=?", (request_id,)).fetchone()
@@ -1426,7 +1591,8 @@ def reject_learning_request(request_id: int, data: MentorRequestAction, backgrou
                 f"{mentor_name}님이 이번 학습 요청을 수락하지 못했어요.\n배움잇다 AI에서 다른 멘토를 찾아보세요.")
     return {"ok": True, "status": "cancelled"}
 @app.post("/api/learning-requests/{request_id}/confirm")
-def confirm_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks):
+def confirm_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     with get_db() as conn:
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (data.user_id,)).fetchone()
         request = conn.execute("SELECT * FROM learning_requests WHERE id=?", (request_id,)).fetchone()
@@ -1440,7 +1606,8 @@ def confirm_learning_request(request_id: int, data: MentorRequestAction, backgro
                 f"{mentor_name}님이 학습 요청을 수락했어요.\n배움잇다 AI의 '내 기록'에서 약속 쪽지로 만날 시간과 장소를 정해 보세요.")
     return {"ok": True, "status": "confirmed"}
 @app.put("/api/learning-requests/{request_id}/appointment-note")
-def update_appointment_note(request_id: int, data: AppointmentNoteInput, background: BackgroundTasks):
+def update_appointment_note(request_id: int, data: AppointmentNoteInput, background: BackgroundTasks, me: dict = Depends(current_user)):
+    same_user(me, data.user_id)
     note = data.note.strip()
     if len(note) > 200:
         raise HTTPException(400, "약속 쪽지는 200자 이내로 적어 주세요.")
@@ -1468,7 +1635,8 @@ def update_appointment_note(request_id: int, data: AppointmentNoteInput, backgro
                     f"{writer}님이 약속 쪽지를 남겼어요.\n배움잇다 AI에 로그인해 확인해 주세요.")
     return {"ok": True, **dict(saved)}
 @app.get("/api/mentor-reviews/{user_id}")
-def mentor_reviews(user_id: int):
+def mentor_reviews(user_id: int, me: dict = Depends(current_user)):
+    same_user(me, user_id)
     with get_db() as conn:
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (user_id,)).fetchone()
         if not mentor:

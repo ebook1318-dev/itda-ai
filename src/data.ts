@@ -1,5 +1,5 @@
 export type FormValues = { tool: string; course_name?: string; level: string; devices: string[]; time_slots: string[]; neighborhoods: string[]; keyword?: string }
-export type User = { id: number; nickname: string; role: 'learner' | 'mentor'; email_verified?: boolean; needs_email_verification?: boolean }
+export type User = { id: number; nickname: string; role: 'learner' | 'mentor'; email_verified?: boolean; needs_email_verification?: boolean; token?: string }
 export type MatchTier = 'match' | 'partial' | 'miss'
 export type MatchDetailField = { tier: MatchTier; label: string }
 export type MatchDetail = { tool?: MatchDetailField; level?: MatchDetailField; device: MatchDetailField; time: MatchDetailField; neighborhood: MatchDetailField; keyword?: MatchDetailField }
