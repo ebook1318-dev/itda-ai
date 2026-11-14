@@ -538,6 +538,14 @@ def init_db():
         # 학습 완료는 수강생·멘토 누구나 누를 수 있고, 각자 확인한 시각을 따로 남깁니다 (양쪽 확인 = 실제 만남 근거).
         add_column(conn, "learning_requests", "learner_done_at", "TEXT")
         add_column(conn, "learning_requests", "mentor_done_at", "TEXT")
+        # 요청이 끝난 이유: rejected(멘토 거절) · learner_cancel(수강생이 대기 중 취소) · expired(멘토 3일 무응답)
+        # · cancel_after_accept(수락 뒤 취소, 누가·왜). 예전 기록은 비어 있음(구분 불가 → '취소됨')
+        add_column(conn, "learning_requests", "ended_reason", "TEXT")
+        add_column(conn, "learning_requests", "cancelled_by", "TEXT")
+        add_column(conn, "learning_requests", "cancel_reason", "TEXT")
+        add_column(conn, "learning_requests", "ended_at", "TEXT")
+        add_column(conn, "learning_requests", "reminded_at", "TEXT")
+        add_column(conn, "learning_requests", "end_notified_at", "TEXT")
         # 예전에는 수강생만 완료할 수 있었으므로, 이미 완료된 학습은 수강생이 확인한 것으로 봅니다.
         conn.execute("UPDATE learning_requests SET learner_done_at=COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE status='completed' AND learner_done_at IS NULL AND mentor_done_at IS NULL")
         migrate_space_id_optional(conn)
@@ -1163,6 +1171,49 @@ def notify_user(background: BackgroundTasks, user_id, subject: str, message: str
     if user and user["email"] and user["email_verified_at"] and not user["withdrawn_at"]:
         background.add_task(send_mail, user["email"], f"[배움잇다 AI] {subject}", message + MAIL_FOOTER)
 
+# ── 멘토 무응답 처리: 하루 지나면 멘토에게 한 번 더 알림, 3일 지나면 '응답 없음'으로 끝냄 ───────────
+PENDING_REMIND_HOURS, PENDING_EXPIRE_DAYS = 24, 3
+def expire_stale_requests(conn):
+    """3일 넘게 답이 없는 요청을 '응답 없음'으로 끝냅니다. (화면을 열 때마다·주기적으로 실행, 어느 서버든 안전)"""
+    conn.execute(f"""UPDATE learning_requests SET status='expired', ended_reason='expired', ended_at=CURRENT_TIMESTAMP
+        WHERE status='pending' AND created_at <= datetime('now', '-{PENDING_EXPIRE_DAYS} days')""")
+def pending_sweep():
+    """메일이 설정된 서버에서만: 무응답 알림·응답 없음 안내 메일을 보냅니다. (보낸 기록을 남겨 한 번만 보냄)"""
+    if not mail_enabled():
+        return
+    with get_db() as conn:
+        expire_stale_requests(conn)
+        remind = conn.execute(f"""SELECT lr.id, lr.user_id, lr.mentor_id FROM learning_requests lr WHERE lr.status='pending' AND lr.reminded_at IS NULL
+            AND lr.created_at <= datetime('now', '-{PENDING_REMIND_HOURS} hours')""").fetchall()
+        ended = conn.execute("SELECT id, user_id, mentor_id FROM learning_requests WHERE status='expired' AND end_notified_at IS NULL").fetchall()
+        jobs = []
+        for r in remind:
+            conn.execute("UPDATE learning_requests SET reminded_at=CURRENT_TIMESTAMP WHERE id=?", (r["id"],))
+            jobs.append((mentor_user_id(conn, r["mentor_id"]), "수강생이 답을 기다리고 있어요",
+                         f"{display_name(conn, r['user_id'])}님이 보낸 학습 요청에 아직 답하지 않으셨어요.\n"
+                         f"요청 후 {PENDING_EXPIRE_DAYS}일이 지나면 자동으로 끝나요. 배움잇다 AI에서 수락 또는 거절해 주세요."))
+        for r in ended:
+            conn.execute("UPDATE learning_requests SET end_notified_at=CURRENT_TIMESTAMP WHERE id=?", (r["id"],))
+            name = (conn.execute("SELECT name FROM candidates WHERE id=?", (r["mentor_id"],)).fetchone() or {"name": "멘토"})["name"]
+            jobs.append((r["user_id"], "멘토님이 답하지 않아 요청이 끝났어요",
+                         f"{name}님이 {PENDING_EXPIRE_DAYS}일 동안 답하지 않아 학습 요청이 자동으로 끝났어요.\n배움잇다 AI에서 다른 멘토에게 새로 요청해 보세요."))
+            jobs.append((mentor_user_id(conn, r["mentor_id"]), "학습 요청의 응답 기한이 지났어요",
+                         f"{display_name(conn, r['user_id'])}님이 보낸 학습 요청이 {PENDING_EXPIRE_DAYS}일 동안 답이 없어 자동으로 끝났어요."))
+        recipients = []
+        for uid, subject, body in jobs:
+            u = conn.execute("SELECT email, email_verified_at, withdrawn_at FROM users WHERE id=?", (uid,)).fetchone() if uid else None
+            if u and u["email"] and u["email_verified_at"] and not u["withdrawn_at"]:
+                recipients.append((u["email"], f"[배움잇다 AI] {subject}", body + MAIL_FOOTER))
+    for to, subject, body in recipients:
+        send_mail(to, subject, body)
+def _sweep_loop():
+    while True:
+        time.sleep(600)
+        try:
+            pending_sweep()
+        except Exception as error:  # 알림이 실패해도 서버는 계속
+            print(f"[SWEEP] 실패: {type(error).__name__}: {error}")
+threading.Thread(target=_sweep_loop, daemon=True).start()
 def mentor_user_id(conn, candidate_id):
     row = conn.execute("SELECT mentor_user_id FROM candidates WHERE id=?", (candidate_id,)).fetchone()
     return row["mentor_user_id"] if row else None
@@ -1449,6 +1500,7 @@ def create_learning_request(data: LearningRequestInput, background: BackgroundTa
                 raise HTTPException(400, "선택한 학습 공간을 다시 확인해 주세요.")
         if not user or not mentor:
             raise HTTPException(400, "선택한 멘토를 다시 확인해 주세요.")
+        expire_stale_requests(conn)
         pending = conn.execute("SELECT id FROM learning_requests WHERE user_id=? AND status='pending' LIMIT 1", (data.user_id,)).fetchone()
         if pending:
             raise HTTPException(400, "대기중인 멘토 요청이 있어 수락·거절·취소 전에는 새 멘토 요청을 보낼 수 없습니다.")
@@ -1529,6 +1581,7 @@ def add_review(data: ReviewInput, background: BackgroundTasks, me: dict = Depend
 def history(user_id: int, me: dict = Depends(current_user)):
     same_user(me, user_id)
     with get_db() as conn:
+        expire_stale_requests(conn)
         saved = conn.execute("SELECT c.* FROM saved_candidates s JOIN candidates c ON c.id=s.candidate_id WHERE s.user_id=? ORDER BY s.id DESC", (user_id,)).fetchall()
         requests = conn.execute("""SELECT lr.*, m.name AS mentor_name, s.name AS space_name, m.official_url AS mentor_url,
             (SELECT r.rating FROM reviews r WHERE r.request_id=lr.id LIMIT 1) AS review_rating,
@@ -1607,6 +1660,7 @@ def update_mentor_status(user_id: int, data: TeamStatusInput, x_team_password: s
 def mentor_requests(user_id: int, me: dict = Depends(current_user)):
     same_user(me, user_id)
     with get_db() as conn:
+        expire_stale_requests(conn)
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (user_id,)).fetchone()
         if not mentor:
             return []
@@ -1623,9 +1677,41 @@ def cancel_learning_request(request_id: int, data: MentorRequestAction, backgrou
             raise HTTPException(403, "이 요청을 취소할 권한이 없습니다.")
         if request["status"] != "pending":
             raise HTTPException(400, "대기중인 요청만 취소할 수 있습니다.")
-        conn.execute("UPDATE learning_requests SET status='cancelled' WHERE id=?", (request_id,))
+        conn.execute("UPDATE learning_requests SET status='cancelled', ended_reason='learner_cancel', cancelled_by='learner', ended_at=CURRENT_TIMESTAMP WHERE id=?", (request_id,))
         learner, mentor_uid = display_name(conn, request["user_id"]), mentor_user_id(conn, request["mentor_id"])
     notify_user(background, mentor_uid, "학습 요청이 취소됐어요", f"{learner}님이 보낸 학습 요청을 취소했어요.")
+    return {"ok": True, "status": "cancelled"}
+CANCEL_REASONS = ["일정이 안 맞아요", "개인 사정이 생겼어요", "연락이 안 돼요", "기타"]  # 화면(App.tsx)과 같은 목록
+class CancelAcceptedInput(BaseModel):
+    user_id: int
+    reason: str
+@app.post("/api/learning-requests/{request_id}/cancel-accepted")
+def cancel_accepted_learning(request_id: int, data: CancelAcceptedInput, background: BackgroundTasks, me: dict = Depends(current_user)):
+    """수락된(진행 중) 학습을 수강생 또는 멘토가 취소. 이유는 필수이고 상대에게 메일로 알려요."""
+    same_user(me, data.user_id)
+    if data.reason not in CANCEL_REASONS:
+        raise HTTPException(400, "취소 이유를 골라 주세요.")
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM learning_requests WHERE id=?", (request_id,)).fetchone()
+        mentor = conn.execute("SELECT id, name FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (data.user_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "학습 기록을 찾지 못했습니다.")
+        if row["user_id"] == data.user_id:
+            side = "learner"
+        elif mentor and row["mentor_id"] == mentor["id"]:
+            side = "mentor"
+        else:
+            raise HTTPException(403, "이 학습을 취소할 권한이 없습니다.")
+        if row["status"] != "confirmed":
+            raise HTTPException(400, "진행 중인 학습만 취소할 수 있어요.")
+        conn.execute("UPDATE learning_requests SET status='cancelled', ended_reason='cancel_after_accept', cancelled_by=?, cancel_reason=?, ended_at=CURRENT_TIMESTAMP WHERE id=?",
+                     (side, data.reason, request_id))
+        if side == "learner":
+            recipient, who = mentor_user_id(conn, row["mentor_id"]), f"{display_name(conn, row['user_id'])}님(수강생)"
+        else:
+            recipient, who = row["user_id"], f"{mentor['name']} 멘토님"
+    notify_user(background, recipient, "진행 중이던 학습이 취소됐어요",
+                f"{who}이 진행 중이던 학습을 취소했어요.\n이유: {data.reason}\n배움잇다 AI의 기록에서 확인할 수 있어요.")
     return {"ok": True, "status": "cancelled"}
 @app.post("/api/learning-requests/{request_id}/reject")
 def reject_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks, me: dict = Depends(current_user)):
@@ -1637,11 +1723,11 @@ def reject_learning_request(request_id: int, data: MentorRequestAction, backgrou
             raise HTTPException(403, "이 요청을 거절할 권한이 없습니다.")
         if request["status"] != "pending":
             raise HTTPException(400, "대기중인 요청만 거절할 수 있습니다.")
-        conn.execute("UPDATE learning_requests SET status='cancelled' WHERE id=?", (request_id,))
+        conn.execute("UPDATE learning_requests SET status='rejected', ended_reason='rejected', cancelled_by='mentor', ended_at=CURRENT_TIMESTAMP WHERE id=?", (request_id,))
         mentor_name = conn.execute("SELECT name FROM candidates WHERE id=?", (request["mentor_id"],)).fetchone()["name"]
     notify_user(background, request["user_id"], "학습 요청이 수락되지 않았어요",
-                f"{mentor_name}님이 이번 학습 요청을 수락하지 못했어요.\n배움잇다 AI에서 다른 멘토를 찾아보세요.")
-    return {"ok": True, "status": "cancelled"}
+                f"{mentor_name}님이 이번 학습 요청은 어렵다고 하셨어요.\n배움잇다 AI에서 다른 멘토를 찾아보세요.")
+    return {"ok": True, "status": "rejected"}
 @app.post("/api/learning-requests/{request_id}/confirm")
 def confirm_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks, me: dict = Depends(current_user)):
     same_user(me, data.user_id)
@@ -1710,11 +1796,13 @@ def team_operations(x_team_password: str | None = Header(default=None)):
     with get_db() as conn:
         mentors = conn.execute("SELECT id, name, verification_status FROM candidates WHERE kind='mentor' ORDER BY id").fetchall()
         spaces = conn.execute("SELECT id, name FROM candidates WHERE kind='space' ORDER BY id").fetchall()
-        requests = conn.execute("SELECT id, mentor_id, status, learner_done_at, mentor_done_at FROM learning_requests").fetchall()
+        expire_stale_requests(conn)
+        requests = conn.execute("SELECT id, mentor_id, status, learner_done_at, mentor_done_at, ended_reason FROM learning_requests").fetchall()
         reviews = conn.execute("""SELECT r.id, r.candidate_id, r.content, r.rating, r.revisit, r.tags, COALESCE(r.hidden,0) AS hidden, r.created_at,
             c.name AS mentor_name FROM reviews r LEFT JOIN candidates c ON c.id=r.candidate_id ORDER BY r.id DESC""").fetchall()
     accepted = ("confirmed", "completed")
     rated = [r for r in reviews if r["rating"] is not None]
+    ended = lambda reason: sum(1 for r in requests if r["ended_reason"] == reason)
     def tag_counts(rows):
         counts = {t: 0 for t in REVIEW_TAGS}
         for r in rows:
@@ -1744,9 +1832,12 @@ def team_operations(x_team_password: str | None = Header(default=None)):
             "mentors": len(mentors), "mentors_verified": sum(1 for m in mentors if m["verification_status"] == "verified"),
             "spaces": len(space_rows), "spaces_location_checked": sum(1 for s in space_rows if s["location"]),
             "spaces_facility_checked": sum(1 for s in space_rows if s["facility"]),
-            "requests": len(requests), "accepted": sum(1 for r in requests if r["status"] in accepted),
+            "requests": len(requests), "accepted": sum(1 for r in requests if r["status"] in accepted or r["ended_reason"] == "cancel_after_accept"),
             "completed": sum(1 for r in requests if r["status"] == "completed"),
             "both_confirmed": sum(1 for r in requests if r["status"] == "completed" and r["learner_done_at"] and r["mentor_done_at"]),
+            "pending": sum(1 for r in requests if r["status"] == "pending"),
+            "rejected": ended("rejected") + sum(1 for r in requests if r["status"] == "rejected" and not r["ended_reason"]),
+            "expired": ended("expired"), "learner_cancelled": ended("learner_cancel"), "cancelled_after_accept": ended("cancel_after_accept"),
             "reviews": len(rated), "avg_rating": _avg([r["rating"] for r in rated]),
             "revisit_percent": _percent([r["revisit"] for r in rated]),
             "tags": tag_counts(rated),
