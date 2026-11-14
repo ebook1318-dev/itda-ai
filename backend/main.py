@@ -526,6 +526,11 @@ def init_db():
         add_column(conn, "reviews", "revisit", "INTEGER")
         add_column(conn, "reviews", "hidden", "INTEGER DEFAULT 0")
         add_column(conn, "reviews", "tags", "TEXT DEFAULT ''")  # 칭찬 버튼 (쉼표로 구분)
+        # 학습 완료는 수강생·멘토 누구나 누를 수 있고, 각자 확인한 시각을 따로 남깁니다 (양쪽 확인 = 실제 만남 근거).
+        add_column(conn, "learning_requests", "learner_done_at", "TEXT")
+        add_column(conn, "learning_requests", "mentor_done_at", "TEXT")
+        # 예전에는 수강생만 완료할 수 있었으므로, 이미 완료된 학습은 수강생이 확인한 것으로 봅니다.
+        conn.execute("UPDATE learning_requests SET learner_done_at=COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE status='completed' AND learner_done_at IS NULL AND mentor_done_at IS NULL")
         migrate_space_id_optional(conn)
         conn.execute("UPDATE users SET mentor_verification_status='pending' WHERE role='mentor' AND (mentor_verification_status IS NULL OR mentor_verification_status='not_applicable')")
         conn.execute("UPDATE users SET mentor_verification_status='not_applicable' WHERE role='learner' AND mentor_verification_status IS NULL")
@@ -1245,17 +1250,38 @@ def create_learning_request(data: LearningRequestInput, background: BackgroundTa
     notify_user(background, mentor_uid, "새 학습 요청이 도착했어요",
                 f"{learner}님이 학습을 요청했어요.\n배움잇다 AI에 로그인해 요청 내용을 확인하고 수락 또는 거절해 주세요.")
     return {"id": cursor.lastrowid, "status": "pending"}
+def mark_learning_done(conn, row, side: str):
+    """수강생(learner) 또는 멘토(mentor)가 '학습을 마쳤어요'를 누름. 처음 누른 사람이 학습을 완료로 바꾸고,
+    상대방은 나중에 '확인'만 더합니다. 처음 완료된 경우 True."""
+    if row["status"] not in ("confirmed", "completed"):
+        raise HTTPException(400, "멘토가 수락한 학습만 완료할 수 있어요.")
+    column = "learner_done_at" if side == "learner" else "mentor_done_at"
+    first = row["status"] == "confirmed"
+    conn.execute(f"UPDATE learning_requests SET status='completed', completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP), {column}=COALESCE({column}, CURRENT_TIMESTAMP) WHERE id=?", (row["id"],))
+    return first
 @app.post("/api/learning-requests/{request_id}/complete")
-def complete_learning_request(request_id: int, data: LearningRequestInput):
+def complete_learning_request(request_id: int, data: LearningRequestInput, background: BackgroundTasks):
     with get_db() as conn:
         row = conn.execute("SELECT * FROM learning_requests WHERE id=? AND user_id=?", (request_id, data.user_id)).fetchone()
         if not row:
             raise HTTPException(404, "요청 기록을 찾지 못했습니다.")
-        if row["status"] == "completed":
-            return {"ok": True, "status": "completed"}
-        if row["status"] != "confirmed":
-            raise HTTPException(400, "멘토가 수락한 학습만 완료할 수 있어요.")
-        conn.execute("UPDATE learning_requests SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE id=?", (request_id,))
+        first = mark_learning_done(conn, row, "learner")
+        learner, mentor_uid = display_name(conn, row["user_id"]), mentor_user_id(conn, row["mentor_id"])
+    if first:
+        notify_user(background, mentor_uid, "학습이 완료로 표시됐어요",
+                    f"{learner}님이 '학습을 마쳤어요'를 눌렀어요.\n배움잇다 AI의 '요청' 탭 > 지난 학습에서 '완료 확인'을 눌러 주세요.")
+    return {"ok": True, "status": "completed"}
+@app.post("/api/learning-requests/{request_id}/mentor-complete")
+def mentor_complete_learning_request(request_id: int, data: MentorRequestAction, background: BackgroundTasks):
+    with get_db() as conn:
+        mentor = conn.execute("SELECT id, name FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (data.user_id,)).fetchone()
+        row = conn.execute("SELECT * FROM learning_requests WHERE id=?", (request_id,)).fetchone()
+        if not mentor or not row or row["mentor_id"] != mentor["id"]:
+            raise HTTPException(403, "이 학습을 완료할 권한이 없습니다.")
+        first = mark_learning_done(conn, row, "mentor")
+    if first:
+        notify_user(background, row["user_id"], "학습은 어떠셨어요? 후기를 남겨 주세요",
+                    f"{mentor['name']} 멘토님이 학습을 완료로 표시했어요.\n배움잇다 AI의 '내 기록'에서 별점과 한 줄 후기를 남겨 주세요.")
     return {"ok": True, "status": "completed"}
 @app.post("/api/saved")
 def save_candidate(data: SaveInput):
@@ -1282,6 +1308,7 @@ def add_review(data: ReviewInput, background: BackgroundTasks):
             raise HTTPException(400, "이 학습에는 이미 후기를 남겼어요.")
         conn.execute("INSERT INTO reviews (user_id,candidate_id,request_id,content,rating,revisit,tags) VALUES (?,?,?,?,?,?,?)",
                      (data.user_id, request["mentor_id"], data.request_id, content, data.rating, 1 if data.revisit else 0, ",".join(tags)))
+        conn.execute("UPDATE learning_requests SET learner_done_at=COALESCE(learner_done_at, CURRENT_TIMESTAMP) WHERE id=?", (data.request_id,))
         mentor_uid = mentor_user_id(conn, request["mentor_id"])
     notify_user(background, mentor_uid, "새 이용 후기가 도착했어요",
                 "수강생이 함께한 학습에 후기를 남겼어요.\n배움잇다 AI에 로그인해 '받은 이용 후기'에서 확인해 주세요.")
@@ -1463,7 +1490,7 @@ def team_operations(x_team_password: str | None = Header(default=None)):
     with get_db() as conn:
         mentors = conn.execute("SELECT id, name, verification_status FROM candidates WHERE kind='mentor' ORDER BY id").fetchall()
         spaces = conn.execute("SELECT id, name FROM candidates WHERE kind='space' ORDER BY id").fetchall()
-        requests = conn.execute("SELECT id, mentor_id, status FROM learning_requests").fetchall()
+        requests = conn.execute("SELECT id, mentor_id, status, learner_done_at, mentor_done_at FROM learning_requests").fetchall()
         reviews = conn.execute("""SELECT r.id, r.candidate_id, r.content, r.rating, r.revisit, r.tags, COALESCE(r.hidden,0) AS hidden, r.created_at,
             c.name AS mentor_name FROM reviews r LEFT JOIN candidates c ON c.id=r.candidate_id ORDER BY r.id DESC""").fetchall()
     accepted = ("confirmed", "completed")
@@ -1489,6 +1516,7 @@ def team_operations(x_team_password: str | None = Header(default=None)):
         mentor_table.append({"name": m["name"], "verified": m["verification_status"] == "verified",
                              "requests": len(reqs), "accepted": sum(1 for r in reqs if r["status"] in accepted),
                              "completed": sum(1 for r in reqs if r["status"] == "completed"),
+                             "both_confirmed": sum(1 for r in reqs if r["status"] == "completed" and r["learner_done_at"] and r["mentor_done_at"]),
                              "reviews": len(revs), "avg_rating": _avg([r["rating"] for r in revs]),
                              "revisit_percent": _percent([r["revisit"] for r in revs]), "tags": tag_counts(revs)})
     return {
@@ -1498,6 +1526,7 @@ def team_operations(x_team_password: str | None = Header(default=None)):
             "spaces_facility_checked": sum(1 for s in space_rows if s["facility"]),
             "requests": len(requests), "accepted": sum(1 for r in requests if r["status"] in accepted),
             "completed": sum(1 for r in requests if r["status"] == "completed"),
+            "both_confirmed": sum(1 for r in requests if r["status"] == "completed" and r["learner_done_at"] and r["mentor_done_at"]),
             "reviews": len(rated), "avg_rating": _avg([r["rating"] for r in rated]),
             "revisit_percent": _percent([r["revisit"] for r in rated]),
             "tags": tag_counts(rated),
