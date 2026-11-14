@@ -91,6 +91,15 @@ if [ ! -f "$ENV_FILE" ]; then
 else
   ok "이미 있음: $ENV_FILE (바꾸려면 파일을 지우고 다시 실행)"
 fi
+# 나중에 추가된 비밀 값: 없으면 이번에 한 번만 물어봐요.
+if ! grep -q '^DEMO_MENTOR_PASSWORD=' "$ENV_FILE"; then
+  echo "  [새 설정] 예시 멘토 5명(캔바장인 등)이 로그인할 때 쓸 새 비밀번호를 정해 주세요."
+  echo "  8자 이상 · 영어와 숫자를 섞어서. 예전 비밀번호(itda2026)는 쓰지 마세요. 화면에 안 보이는 게 정상이에요."
+  value=""
+  while [ "${#value}" -lt 8 ] || [ "$value" = "itda2026" ]; do read -r -s -p "  예시 멘토 비밀번호: " value < /dev/tty; echo; done
+  printf 'DEMO_MENTOR_PASSWORD=%s\n' "$value" >> "$ENV_FILE"; unset value
+  ok "예시 멘토 비밀번호 저장"
+fi
 
 step 5/7 "서비스 등록 (자동 실행)"
 cat > "/etc/systemd/system/$SERVICE.service" <<UNIT

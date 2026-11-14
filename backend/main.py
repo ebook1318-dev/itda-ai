@@ -1,4 +1,5 @@
 import os
+import secrets
 import sqlite3
 import hashlib
 import hmac
@@ -12,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 import secrets
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from backend.settings import TEAM_PASSWORD
+from backend.settings import TEAM_PASSWORD, DEMO_MENTOR_PASSWORD
 # 배포 환경마다 쓰기 가능한 경로가 다르므로, DB_PATH 환경변수가 있으면 그걸 쓰고
 # 없으면 프로젝트 폴더 안의 data/app.db를 기본값으로 씁니다.
 # (Render 등 호스팅 서비스에는 "/workspace" 같은 샌드박스 전용 경로가 없어서 하드코딩하면 안 됩니다.)
@@ -372,10 +373,10 @@ def restore_default_candidates(conn):
     run_batch(conn, space_statements)
     # Render 무료 요금제는 재배포뿐 아니라 "잠자기→깨어나기"만으로도 임시 디스크가 초기화될 수 있습니다.
     # 데모가 항상 작동하도록, 실제로 가입했던 멘토 5명의 정보(2026-11-03 기준 실제 입력값)를
-    # 공간 데이터와 같은 방식으로 코드에 고정해 둡니다. 비밀번호는 모두 공통 기본값으로 설정하며,
+    # 공간 데이터와 같은 방식으로 코드에 고정해 둡니다. 비밀번호는 코드에 쓰지 않고(공개 저장소)
+    # 서버 비밀 설정 DEMO_MENTOR_PASSWORD 값을 씁니다. 값이 없으면 아무도 로그인할 수 없는 임의 비밀번호가 들어가요.
     # 멘토가 같은 닉네임으로 직접 재가입하면(비밀번호를 직접 정하면) 그 계정을 그대로 쓰고
     # 확인(verified) 상태만 자동으로 맞춰줍니다.
-    DEFAULT_MENTOR_PASSWORD = "itda2026"
     # 소개글은 각 멘토의 '등록된 주제'만 바탕으로 작성했습니다.
     # (AI 추천 정확도 테스트 문장의 표현은 일부러 쓰지 않아, 테스트가 공정하도록 했습니다.)
     mentor_rows = [
@@ -394,7 +395,7 @@ def restore_default_candidates(conn):
     # 예전 출처 문구로 저장된 기본 멘토도 새 문구로 바꿔 줍니다.
     conn.execute("UPDATE candidates SET source=? WHERE kind='mentor' AND source='데모용 기본 멘토 (재배포되어도 유지)'", (mentor_source,))
     keys = [normalize_nickname(r[0]) for r in mentor_rows]
-    default_hash = hash_password(DEFAULT_MENTOR_PASSWORD)  # 이미 있는 계정은 INSERT OR IGNORE라 바뀌지 않음
+    default_hash = demo_mentor_hash()  # 이미 있는 계정은 INSERT OR IGNORE라 바뀌지 않음 (아래 rotate에서 처리)
     run_batch(conn, [("""INSERT OR IGNORE INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed)
             VALUES (?,?,?,?,?,?)""", (r[0], key, default_hash, "mentor", "verified", 1)) for r, key in zip(mentor_rows, keys)])
     marks = ",".join("?" * len(keys))
@@ -420,39 +421,30 @@ def restore_default_candidates(conn):
         # 데모 안정성을 위해, 계정이 어떤 경로로 생겼든(하드코딩/재가입 모두) 확인 상태만큼은 항상 맞춰줍니다.
         mentor_statements.append(("UPDATE users SET mentor_verification_status='verified', mentor_consent_confirmed=1 WHERE id=?", (user["id"],)))
     run_batch(conn, mentor_statements)
-def add_sample_candidates(conn):
-    source = "임시 샘플 데이터 (실제 확인 필요)"
-    source_date = "2026-11-03"
-    mentors = [
-        ("박지은", "wldms2026", "ChatGPT", "입문", "스마트폰", "평일 오전,평일 오후", "불당동,백석동", "서북구", "스마트폰으로 ChatGPT 처음 쓰는 분께 안내문·메시지 쓰는 법을 알려드려요."),
-        ("이수현", "soohyun01", "캡컷", "초급", "스마트폰,태블릿", "평일 저녁,주말 오전", "쌍용동,성정동", "서북구", "짧은 영상 편집과 자막 넣는 법을 차근차근 알려드려요."),
-        ("정하늘", "skyhaneul1", "캔바", "중급", "노트북,태블릿", "주말 오후", "두정동,신당동", "서북구", "행사 홍보물, 카드뉴스 디자인을 도와드려요."),
-        ("최은비", "eunbi2026", "ChatGPT", "초급", "스마트폰,노트북", "평일 오후,주말 오전", "신부동,봉명동", "동남구", "자기소개서나 생활 글쓰기를 ChatGPT로 다듬는 법을 알려드려요."),
-        ("한도윤", "doyoon0812", "캡컷", "입문", "스마트폰", "평일 저녁", "구성동,대흥동", "동남구", "사진·영상을 이어 붙여 짧은 영상 만드는 법을 알려드려요."),
-        ("윤서아", "seoah2026a", "캔바", "입문", "노트북", "주말 오전,주말 오후", "성정동,와촌동", "서북구", "발표자료와 안내 포스터 만드는 법을 쉽게 알려드려요."),
-    ]
-    spaces = [
-        ("쌍용2동 행정복지센터 정보화교실", "주민센터 정보화교실", "ChatGPT,캡컷,캔바", "입문,초급,중급", "스마트폰,노트북,태블릿", "평일 오전,평일 오후", "쌍용동", "서북구", "충청남도 천안시 서북구 쌍용동 (정확 주소 확인 필요)", "공식 안내에서 확인 필요", "주민센터 공식 안내 또는 방문 접수에서 이용 절차 확인"),
-        ("성정동 행정복지센터 정보화교실", "주민센터 정보화교실", "ChatGPT,캔바", "입문,초급", "스마트폰,노트북", "평일 오후,주말 오전", "성정동", "서북구", "충청남도 천안시 서북구 성정동 (정확 주소 확인 필요)", "공식 안내에서 확인 필요", "주민센터 공식 안내 또는 방문 접수에서 이용 절차 확인"),
-        ("두정동 작은도서관", "작은도서관", "ChatGPT,캡컷,캔바", "입문,초급,중급", "스마트폰,노트북,태블릿", "평일 오전,평일 오후,주말 오전", "두정동,백석동", "서북구", "충청남도 천안시 서북구 두정동 (정확 주소 확인 필요)", "공식 안내에서 확인 필요", "도서관 공식 안내에서 좌석·프로그램 이용 절차 확인"),
-        ("천안시 성정평생학습관", "평생학습관", "ChatGPT,캡컷,캔바", "입문,초급,중급", "스마트폰,노트북,태블릿", "평일 오전,평일 오후,평일 저녁", "성정동,신당동", "서북구", "충청남도 천안시 서북구 성정동 (정확 주소 확인 필요)", "공식 안내에서 확인 필요", "평생학습관 공식 안내에서 강좌·좌석 이용 절차 확인"),
-        ("신부동 작은도서관", "작은도서관", "ChatGPT,캔바", "입문,초급", "스마트폰,노트북", "평일 오후,주말 오후", "신부동,봉명동", "동남구", "충청남도 천안시 동남구 신부동 (정확 주소 확인 필요)", "공식 안내에서 확인 필요", "도서관 공식 안내에서 좌석 이용 절차 확인"),
-    ]
-    for nickname, password, tool, level, devices, times, neighborhoods, region, description in mentors:
-        nickname_key = normalize_nickname(nickname)
-        conn.execute("""INSERT OR IGNORE INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed)
-            VALUES (?,?,?,?,?,?)""", (nickname, nickname_key, hash_password(password), "mentor", "pending", 1))
-        user = conn.execute("SELECT id, role FROM users WHERE nickname_key=?", (nickname_key,)).fetchone()
-        if user and user["role"] == "mentor":
-            exists = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=?", (user["id"],)).fetchone()
-            if not exists:
-                conn.execute("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,mentor_user_id,consent_confirmed,verification_status)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", ("mentor", nickname, tool, level, devices, region, times, "", source, source_date, description, "거리 정보는 확인 필요", neighborhoods, user["id"], 1, "pending"))
-    for name, facility, tools, levels, devices, times, neighborhoods, region, address, hours, procedure in spaces:
-        exists = conn.execute("SELECT id FROM candidates WHERE kind='space' AND name=? AND source=?", (name, source)).fetchone()
-        if not exists:
-            conn.execute("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,consent_confirmed,verification_status,facility,operating_hours,usage_procedure)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", ("space", name, tools, levels, devices, region, times, "", source, source_date, address, "거리 정보는 확인 필요", neighborhoods, 0, "pending", facility, hours, procedure))
+    rotate_leaked_demo_passwords(conn)
+LOCKED_PREFIX = "locked$"  # 비밀번호 설정 전이라 잠가 둔 예시 멘토 계정 (어떤 비밀번호로도 로그인 안 됨)
+def demo_mentor_hash():
+    return hash_password(DEMO_MENTOR_PASSWORD) if DEMO_MENTOR_PASSWORD else LOCKED_PREFIX + secrets.token_urlsafe(24)
+# 예전에 공개 코드에 적혀 있던 예시 멘토 비밀번호(이미 노출됨). 아직 이 비밀번호를 쓰는 계정만 찾아서
+# 새 비밀번호(DEMO_MENTOR_PASSWORD, 없으면 로그인 불가 임의값)로 바꿉니다. 직접 비밀번호를 바꾼 계정은 건드리지 않아요.
+LEAKED_DEMO_PASSWORDS = {
+    "챗지피티쌤": "itda2026", "영상노트": "itda2026", "캔바장인": "itda2026", "자소서멘토": "itda2026", "자막요정": "itda2026",
+    "박지은": "wldms2026", "이수현": "soohyun01", "정하늘": "skyhaneul1", "최은비": "eunbi2026", "한도윤": "doyoon0812", "윤서아": "seoah2026a",
+}
+def rotate_leaked_demo_passwords(conn):
+    rows = conn.execute("SELECT id, nickname, password_hash, role FROM users WHERE role='mentor' AND withdrawn_at IS NULL").fetchall()
+    changed = []
+    for row in rows:
+        old = LEAKED_DEMO_PASSWORDS.get(row["nickname"])
+        if not old:
+            continue
+        stored = row["password_hash"] or ""
+        # 잠가 둔 계정은 비밀번호가 설정된 서버에서 풀어 줍니다 (Render·네이버가 같은 DB를 쓰므로).
+        if (stored.startswith(LOCKED_PREFIX) and DEMO_MENTOR_PASSWORD) or verify_password(old, stored)[0]:
+            changed.append(("UPDATE users SET password_hash=? WHERE id=?", (demo_mentor_hash(), row["id"])))
+    if changed:
+        run_batch(conn, changed)
+        print(f"[보안] 공개됐던 예시 멘토 비밀번호 {len(changed)}개를 바꿨습니다.")
 def init_db():
     with get_db() as conn:
         conn.executescript("""
