@@ -497,6 +497,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS login_attempts (
             nickname_key TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, locked_until REAL
         );
+        CREATE TABLE IF NOT EXISTS contact_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, reply_email TEXT NOT NULL, message TEXT NOT NULL,
+            done INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS space_geo (
             name TEXT PRIMARY KEY, lat REAL NOT NULL, lng REAL NOT NULL, source TEXT NOT NULL, note TEXT, updated_at TEXT
         );
@@ -1892,6 +1896,38 @@ def mentor_reviews(user_id: int, me: dict = Depends(current_user)):
         rows = conn.execute("""SELECT r.id, r.content, r.rating, r.revisit, r.tags, r.created_at, '익명 수강생' AS learner_name
             FROM reviews r WHERE r.candidate_id=? AND COALESCE(r.hidden,0)=0 ORDER BY r.id DESC""", (mentor["id"],)).fetchall()
     return [{**dict(row), "tags": as_list(row["tags"] or "")} for row in rows]
+# ── 운영팀 문의: 답장받을 이메일 + 내용 → 팀 메일로 전달, 팀 화면에도 저장 ─────────────
+class ContactInput(BaseModel):
+    reply_email: str = ""
+    message: str
+def optional_user(authorization: str | None = Header(default=None)):
+    try:
+        return current_user(authorization) if authorization else None
+    except HTTPException:
+        return None
+@app.post("/api/contact")
+def contact(data: ContactInput, background: BackgroundTasks, me: dict | None = Depends(optional_user)):
+    rate_limit("contact", 3, 600, "문의를 너무 자주 보냈어요.")
+    message = data.message.strip()
+    if len(message) < 5:
+        raise HTTPException(400, "문의 내용을 5자 이상 적어 주세요.")
+    if len(message) > 1000:
+        raise HTTPException(400, "문의 내용은 1000자까지 적을 수 있어요.")
+    email = (me.get("email") if me and me.get("email") else data.reply_email).strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email) or len(email) > 254:
+        raise HTTPException(400, "답장받을 이메일 주소를 정확히 입력해 주세요.")
+    with get_db() as conn:
+        conn.execute("INSERT INTO contact_messages (user_id, reply_email, message) VALUES (?,?,?)", (me["id"] if me else None, email, message))
+    who = f"{me['nickname']} ({'멘토' if me['role'] == 'mentor' else '수강생'})" if me else "로그인 안 한 방문자"
+    notify_team(background, "운영팀 문의가 왔어요", f"보낸 사람: {who}\n답장받을 이메일: {email}\n\n{message}\n\n(팀 화면 > 운영 현황 > 받은 문의에서도 볼 수 있어요)")
+    return {"ok": True, "message": "문의를 보냈어요. 적어 주신 이메일로 답장을 드릴게요."}
+@app.put("/api/team/contacts/{contact_id}/done")
+def team_contact_done(contact_id: int, data: ReviewHideInput, x_team_password: str | None = Header(default=None)):
+    require_team_password(x_team_password)
+    with get_db() as conn:
+        conn.execute("UPDATE contact_messages SET done=? WHERE id=?", (1 if data.hidden else 0, contact_id))
+    return {"ok": True}
+
 # ── 팀 전용: 운영 현황 (기획서의 '시범 운영에서 확인할 지표') · 후기 관리 ─────────────
 def _avg(values):
     values = [v for v in values if v is not None]
@@ -1907,6 +1943,7 @@ def team_operations(x_team_password: str | None = Header(default=None)):
         spaces = conn.execute("SELECT id, name FROM candidates WHERE kind='space' ORDER BY id").fetchall()
         expire_stale_requests(conn)
         requests = conn.execute("SELECT id, mentor_id, status, learner_done_at, mentor_done_at, ended_reason FROM learning_requests").fetchall()
+        contacts = conn.execute("SELECT id, reply_email, message, done, created_at FROM contact_messages ORDER BY done, id DESC LIMIT 100").fetchall()
         reviews = conn.execute("""SELECT r.id, r.candidate_id, r.content, r.rating, r.revisit, r.tags, COALESCE(r.hidden,0) AS hidden, r.created_at,
             c.name AS mentor_name FROM reviews r LEFT JOIN candidates c ON c.id=r.candidate_id ORDER BY r.id DESC""").fetchall()
     accepted = ("confirmed", "completed")
@@ -1953,6 +1990,7 @@ def team_operations(x_team_password: str | None = Header(default=None)):
         },
         "mentors": sorted(mentor_table, key=lambda m: (-m["requests"], m["name"])),
         "reviews": [{**dict(r), "tags": as_list(r["tags"] or "")} for r in reviews],
+        "contacts": [dict(r) for r in contacts],
     }
 @app.put("/api/team/reviews/{review_id}/hidden")
 def team_hide_review(review_id: int, data: ReviewHideInput, x_team_password: str | None = Header(default=None)):

@@ -234,3 +234,5 @@ input:not([type="checkbox"]):not([type="radio"]), textarea, select { max-width:1
 .team-filter { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-3); }
 .team-filter .team-mail-input { flex:1 1 200px; min-width:0; }
 .consent-inline { display:inline-flex; align-items:center; gap:var(--space-1); font-size:var(--text-sm); }
+.account-form textarea { min-height:140px; padding:var(--space-3); border:var(--border-width) solid var(--color-border-strong); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-text); font:inherit; resize:vertical; }
+.site-footer a + a { margin-left:var(--space-2); }

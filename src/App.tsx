@@ -100,8 +100,10 @@ export default function App() {
   const [teamMentors, setTeamMentors] = useState<{ id: number; nickname: string; mentor_verification_status: 'pending' | 'verified'; tools: string[]; times: string[]; consent_confirmed: boolean }[]>([])
   const logoTapTimes = useRef<number[]>([])
   const [showPolicy, setShowPolicy] = useState(() => { try { return window.location.hash === '#privacy' } catch { return false } })
+  const [showContact, setShowContact] = useState(() => { try { return window.location.hash === '#contact' } catch { return false } })
+  const closeContact = () => { try { window.history.replaceState(null, '', window.location.pathname + window.location.search) } catch { /* 무시 */ } setShowContact(false) }
   useEffect(() => { const onExpired = () => { logoutRef.current('로그인이 끝났어요. 다시 로그인해 주세요.') }; window.addEventListener(AUTH_EXPIRED_EVENT, onExpired); return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired) }, [])
-  useEffect(() => { const onHash = () => setShowPolicy(window.location.hash === '#privacy'); window.addEventListener('hashchange', onHash); return () => window.removeEventListener('hashchange', onHash) }, [])
+  useEffect(() => { const onHash = () => { setShowPolicy(window.location.hash === '#privacy'); setShowContact(window.location.hash === '#contact') }; window.addEventListener('hashchange', onHash); return () => window.removeEventListener('hashchange', onHash) }, [])
   const closePolicy = () => { try { window.history.replaceState(null, '', window.location.pathname + window.location.search) } catch { /* 무시 */ } setShowPolicy(false) }
   const updateUser = (next: User) => { setUser(next); try { window.localStorage.setItem('learning-link-user', JSON.stringify(next)) } catch { /* 저장 실패해도 화면은 계속 */ } }
   const verifyBanner = user?.needs_email_verification ? <EmailVerifyBanner user={user} onVerified={() => updateUser({ ...user, email_verified: true, needs_email_verification: false })} /> : null
@@ -110,7 +112,7 @@ export default function App() {
   const update = <K extends keyof FormValues>(key: K, value: FormValues[K]) => setValues(previous => ({ ...previous, [key]: value }))
   const openTeamAccess = () => { setTeamPassword(''); setTeamAccessMessage(''); setTeamView('access') }
   const handleLogoTap = () => { const now = Date.now(); logoTapTimes.current = [...logoTapTimes.current.filter(time => now - time < 1500), now]; if (logoTapTimes.current.length === 5) { logoTapTimes.current = []; openTeamAccess(); return } goHome() }
-  const goHome = () => { if (showPolicy) { try { window.history.replaceState(null, '', window.location.pathname) } catch { /* 무시 */ } setShowPolicy(false) } if (!user) { setAuthOpen(true); return } setAuthOpen(false); setReviewingRequest(null); if (user.role === 'mentor') setMentorHomeTick(tick => tick + 1); else startNewSearch() }
+  const goHome = () => { if (showContact) closeContact(); if (showPolicy) { try { window.history.replaceState(null, '', window.location.pathname) } catch { /* 무시 */ } setShowPolicy(false) } if (!user) { setAuthOpen(true); return } setAuthOpen(false); setReviewingRequest(null); if (user.role === 'mentor') setMentorHomeTick(tick => tick + 1); else startNewSearch() }
   const closeTeamAccess = () => setTeamView('none')
   const teamHeaders = () => ({ 'X-Team-Password': teamPassword.trim() })
   const loadTeamMentors = async () => { try { const response = await api('team/mentors', { headers: teamHeaders() }); const data = await response.json(); if (!response.ok) throw new Error(data.detail); setTeamMentors(data) } catch (error) { setTeamAccessMessage(error instanceof Error ? error.message : '팀 비밀번호를 다시 확인해 주세요.'); setTeamView('access') } }
@@ -143,6 +145,7 @@ export default function App() {
   const saveAppointmentNote = async (requestId: number, note: string) => { if (!user) return; const response = await api(`learning-requests/${requestId}/appointment-note`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: user.id, note }) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || '약속 메모를 저장하지 못했습니다.'); await loadHistory(); await loadMentorRequests(); return data as NoteFields }
   const saveMentor = async () => { if (!user || !mentorTools.length || !mentorDevices.length || !mentorTimes.length || !mentorNeighborhoods.length) return setMessage('가능 도구·기기·시간·동을 모두 골라 주세요.'); if (!mentorTopics.length) return setMessage('가르칠 수 있는 주제를 1개 이상 골라 주세요.'); if (!mentorLevels.length) return setMessage('가르칠 수 있는 수준을 1개 이상 골라 주세요.'); if (mentorIntro.trim().length < 10) return setMessage('소개글을 10자 이상 적어 주세요.'); try { const response = await api('mentor', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: user.id, tools: mentorTools, devices: mentorDevices, times: mentorTimes, neighborhoods: mentorNeighborhoods, topics: mentorTopics, levels: mentorLevels, intro: mentorIntro, consent_confirmed: mentorConsent }) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail); setMentorStatus(data.verification_status); notifyOk('프로필을 저장했습니다. 팀의 동의 확인 전까지 확인 필요로 표시됩니다.') } catch (error) { setMessage(error instanceof Error ? error.message : '저장하지 못했습니다.') } }
   if (showPolicy) return <div className="app-shell"><Header onLogoTap={handleLogoTap} /><PrivacyPolicy onClose={closePolicy} /></div>
+  if (showContact) return <div className="app-shell"><Header onLogoTap={handleLogoTap} /><main className="container auth-page"><ContactForm user={user} onClose={closeContact} /></main></div>
   if (teamView === 'access') return <TeamAccess password={teamPassword} message={teamAccessMessage} onChange={setTeamPassword} onSubmit={submitTeamAccess} onBack={closeTeamAccess} onLogoTap={handleLogoTap} />
   if (teamView === 'manage') return <TeamMentorSettings mentors={teamMentors} message={message} messageOk={messageOk} teamAi={teamAi} onAiCheck={() => runTeamAi('check')} onAccuracy={() => runTeamAi('accuracy')} onMailTest={runMailTest} teamHeaders={teamHeaders} onBack={closeTeamAccess} onChangeStatus={setMentorVerification} onLogoTap={handleLogoTap} />
   if (authOpen && recoveryOpen) return <div className="app-shell"><Header user={user} onAuth={() => setAuthOpen(true)} onLogout={user ? () => logout() : undefined} onLogoTap={handleLogoTap} /><main className="container auth-page"><AccountRecovery onBack={() => { setRecoveryOpen(false); setMessage('') }} /><SiteFooter /></main></div>
@@ -238,7 +241,7 @@ function EmailVerifyBanner({ user, onVerified }: { user: User; onVerified: () =>
   const resend = async () => { setBusy(true); setError(''); try { await call('account/email/send-code', { user_id: user.id }); setNote('인증코드를 다시 보냈어요. 메일이 보이지 않으면 스팸함도 확인해 주세요.') } catch (err) { setError(err instanceof Error ? err.message : '다시 시도해 주세요.') } finally { setBusy(false) } }
   return <section className="verify-banner" aria-label="이메일 인증"><div><strong>이메일 인증</strong><p>{note}</p></div><form onSubmit={verify}><input inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="인증코드 6자리" value={code} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} aria-label="인증코드 6자리" /><button className="primary press" type="submit" disabled={busy || code.length !== 6}>인증하기</button></form>{error && <p className="form-message">{error}</p>}<div className="verify-actions"><button type="button" className="text-button" onClick={resend} disabled={busy}>코드 다시 받기</button><button type="button" className="text-button" onClick={() => setHidden(true)}>나중에 하기</button></div></section>
 }
-function SiteFooter() { return <footer className="site-footer"><a href="#privacy">개인정보처리방침</a><span>잇다 AI · 배움잇다 AI</span></footer> }
+function SiteFooter() { return <footer className="site-footer"><a href="#privacy">개인정보처리방침</a><a href="#contact">운영팀 문의</a><span>잇다 AI · 배움잇다 AI</span></footer> }
 function WithdrawSection({ onWithdraw }: { onWithdraw: (password: string) => Promise<void> }) {
   const [open, setOpen] = useState(false)
   const [password, setPassword] = useState('')
@@ -327,7 +330,7 @@ function AccountRecovery({ onBack }: { onBack: () => void }) {
   const sendCode = async () => { if (!nickname.trim()) return setNotice({ part: 'reset', text: '닉네임을 입력해 주세요.', ok: false }); if (await call('auth/reset/send-code', { nickname }, 'reset')) setCodeSent(true) }
   const confirm = async (event: FormEvent) => { event.preventDefault(); if (password.length < 8) return setNotice({ part: 'reset', text: '새 비밀번호는 8자리 이상으로 정해 주세요.', ok: false }); if (password !== password2) return setNotice({ part: 'reset', text: '새 비밀번호 두 칸이 서로 달라요. 같게 입력해 주세요.', ok: false }); if (await call('auth/reset/confirm', { nickname, code, new_password: password }, 'reset')) setDone(true) }
   const msg = (part: 'nick' | 'reset') => notice?.part === part ? <p className={`form-message ${notice.ok ? 'ok' : ''}`}>{notice.text}</p> : null
-  return <section className="auth-card recovery-card"><p className="eyebrow">계정 찾기</p><h1>닉네임·비밀번호 찾기</h1><p className="help">가입할 때 적은 이메일로 안내를 보내드려요. 이메일 인증을 하지 않은 계정은 메일로 찾을 수 없으니 운영팀(개인정보처리방침의 문의처)으로 문의해 주세요.</p>
+  return <section className="auth-card recovery-card"><p className="eyebrow">계정 찾기</p><h1>닉네임·비밀번호 찾기</h1><p className="help">가입할 때 적은 이메일로 안내를 보내드려요. 이메일 인증을 하지 않은 계정은 메일로 찾을 수 없으니 <a href="#contact">운영팀에 문의</a>해 주세요.</p>
     <form onSubmit={findNickname} className="recovery-part"><h2>닉네임을 잊었어요</h2><label>가입할 때 쓴 이메일<input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="name@example.com" required /></label>{msg('nick')}<button className="outline press" type="submit">닉네임 메일로 받기</button></form>
     {done ? <div className="recovery-part"><h2>비밀번호를 바꿨어요</h2>{msg('reset')}<button className="primary press" type="button" onClick={onBack}>로그인하러 가기</button></div> :
     <form onSubmit={confirm} className="recovery-part"><h2>비밀번호를 잊었어요</h2><label>닉네임<input value={nickname} onChange={event => { setNickname(event.target.value); setCodeSent(false) }} required /></label><button className="outline press" type="button" onClick={sendCode}>{codeSent ? '코드 다시 받기' : '재설정 코드 메일로 받기'}</button>
@@ -359,6 +362,23 @@ function AccountSettings({ user, onUpdated }: { user: User; onUpdated: (next: Pa
     {notice && <p className={`form-message ${notice.ok ? 'ok' : ''}`}>{notice.text}</p>}
   </section>
 }
+function ContactForm({ user, onClose }: { user: User | null; onClose: () => void }) {
+  const [email, setEmail] = useState('')
+  const [text, setText] = useState('')
+  const [notice, setNotice] = useState<{ text: string; ok: boolean } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [sent, setSent] = useState(false)
+  const submit = async (event: FormEvent) => { event.preventDefault(); if (text.trim().length < 5) return setNotice({ text: '문의 내용을 5자 이상 적어 주세요.', ok: false }); setBusy(true); try { const response = await api('contact', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reply_email: email, message: text }) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail); setNotice({ text: data.message, ok: true }); setSent(true) } catch (error) { setNotice({ text: error instanceof Error && error.message ? error.message : '보내지 못했어요. 잠시 뒤 다시 시도해 주세요.', ok: false }) } finally { setBusy(false) } }
+  return <section className="auth-card recovery-card"><p className="eyebrow">운영팀 문의</p><h1>무엇을 도와드릴까요?</h1><p className="help">궁금한 점이나 불편한 점을 적어 주세요. 운영팀이 확인하고 이메일로 답장드려요. 닉네임·비밀번호를 잊으셨다면 로그인 화면의 '닉네임·비밀번호를 잊으셨나요?'로 바로 찾을 수 있어요.</p>
+    {sent ? <><p className="form-message ok">{notice?.text}</p><div className="actions end"><button className="primary press" onClick={onClose}>돌아가기</button></div></> :
+    <form className="account-form" onSubmit={submit}>
+      {user?.email_masked ? <p className="help">답장은 가입한 이메일(<strong>{user.email_masked}</strong>)로 보내드려요.</p> : <label>답장받을 이메일<input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="name@example.com" required /></label>}
+      <label>문의 내용<textarea value={text} maxLength={1000} onChange={event => setText(event.target.value)} placeholder="예: 멘토 요청을 보냈는데 3일이 지나도 답이 없어요." /></label><small className="help-inline">{text.trim().length}/1000자</small>
+      {notice && <p className={`form-message ${notice.ok ? 'ok' : ''}`}>{notice.text}</p>}
+      <div className="actions"><button type="button" className="outline press" onClick={onClose}>돌아가기</button><button type="submit" className="primary press" disabled={busy}>{busy ? '보내는 중…' : '문의 보내기'}</button></div>
+    </form>}
+  </section>
+}
 function Stars({ value }: { value: number }) { return <span className="stars" aria-label={`별점 ${value}점`}>{'★'.repeat(value)}<span className="stars-off">{'★'.repeat(5 - value)}</span></span> }
 function ReviewForm({ request, onSubmit, onLater }: { request: LearningRequest; onSubmit: (rating: number, revisit: boolean, content: string, tags: string[]) => Promise<void>; onLater: () => void }) {
   const [rating, setRating] = useState(0)
@@ -388,6 +408,7 @@ function TeamOperations({ headers }: { headers: () => Record<string, string> }) 
   const [message, setMessage] = useState('')
   const load = async () => { try { const response = await api('team/operations', { headers: headers() }); const body = await response.json(); if (!response.ok) throw new Error(body.detail); setData(body); setMessage('') } catch (error) { setMessage(error instanceof Error ? error.message : '불러오지 못했습니다.') } }
   useEffect(() => { load() }, [])
+  const toggleDone = async (contact: any) => { try { const response = await api(`team/contacts/${contact.id}/done`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ hidden: !contact.done }) }); if (!response.ok) throw new Error((await response.json()).detail); await load() } catch (error) { setMessage(error instanceof Error ? error.message : '바꾸지 못했습니다.') } }
   const toggleHidden = async (review: any) => { try { const response = await api(`team/reviews/${review.id}/hidden`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ hidden: !review.hidden }) }); const body = await response.json(); if (!response.ok) throw new Error(body.detail); await load() } catch (error) { setMessage(error instanceof Error ? error.message : '바꾸지 못했습니다.') } }
   if (!data) return <section className="team-ai"><h2>운영 현황</h2><p className="help">{message || '불러오는 중…'}</p>{message && <div className="team-actions"><button className="outline press" onClick={load}>다시 불러오기</button></div>}</section>
   const s = data.summary
@@ -403,6 +424,8 @@ function TeamOperations({ headers }: { headers: () => Record<string, string> }) 
     <p className="ops-funnel"><span>요청 <b>{s.requests}</b></span>›<span>수락 <b>{s.accepted}</b>{pct(s.accepted, s.requests)}</span>›<span>실제 만남(완료) <b>{s.completed}</b>{pct(s.completed, s.requests)} · 양쪽 확인 <b>{s.both_confirmed}</b></span>›<span>후기 <b>{s.reviews}</b>{pct(s.reviews, s.completed)}</span></p>
     <p className="ops-funnel"><span>요청 결과 ·</span><span>대기 <b>{s.pending}</b></span><span>거절 <b>{s.rejected}</b></span><span>응답 없음 <b>{s.expired}</b></span><span>요청 취소 <b>{s.learner_cancelled}</b></span><span>수락 후 취소 <b>{s.cancelled_after_accept}</b></span></p>
     <div className="table-scroll"><table className="ops-table"><thead><tr><th>멘토</th><th>요청</th><th>수락</th><th>완료</th><th>양쪽 확인</th><th>후기</th><th>평균 별점</th><th>재이용</th></tr></thead><tbody>{data.mentors.map((m: any) => <tr key={m.name}><td>{m.name}{m.verified ? '' : <small> (확인 전)</small>}</td><td>{m.requests}</td><td>{m.accepted}</td><td>{m.completed}</td><td>{m.both_confirmed}</td><td>{m.reviews}</td><td>{m.avg_rating ? `★ ${Number(m.avg_rating).toFixed(1)}` : '-'}</td><td>{m.revisit_percent != null ? `${m.revisit_percent}%` : '-'}</td></tr>)}</tbody></table></div>
+    <h3>받은 문의 ({(data.contacts || []).filter((c: any) => !c.done).length}건 처리 전)</h3>
+    {(data.contacts || []).length ? data.contacts.map((contact: any) => <article key={contact.id} className={`review ${contact.done ? 'is-hidden' : ''}`}><div className="review-head"><strong>{contact.reply_email}</strong><small>{localDate(contact.created_at)}{contact.done ? ' · 처리 완료' : ''}</small><button className="outline press review-hide" onClick={() => toggleDone(contact)}>{contact.done ? '처리 전으로' : '처리 완료'}</button></div><p>{contact.message}</p></article>) : <p className="empty">아직 받은 문의가 없어요.</p>}
     <h3>전체 후기 ({data.reviews.length})</h3>
     {data.reviews.length ? data.reviews.map((review: any) => <article key={review.id} className={`review ${review.hidden ? 'is-hidden' : ''}`}><div className="review-head">{review.rating ? <Stars value={review.rating} /> : null}<strong>{review.mentor_name || '삭제된 멘토'}</strong>{review.revisit === 1 && <span className="badge">재이용 의향</span>}<small>{localDate(review.created_at)}{review.hidden ? ' · 숨김' : ''}</small><button className="outline press review-hide" onClick={() => toggleHidden(review)}>{review.hidden ? '다시 보이기' : '숨기기'}</button></div>{review.content && <p>{review.content}</p>}{review.tags?.length ? <div className="chips">{review.tags.map((tag: string) => <span key={tag}>{tag}</span>)}</div> : null}</article>) : <p className="empty">아직 후기가 없어요.</p>}
   </section>
