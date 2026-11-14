@@ -196,6 +196,13 @@ function absoluteTime(iso: string | null | undefined) {
   const mi = String(then.getMinutes()).padStart(2, '0')
   return `${mm}/${dd} ${hh}:${mi}`
 }
+function localDate(iso: string | null | undefined) {
+  // 서버 시간(세계 표준시)을 사용자 기기 시간(한국)으로 바꿔 날짜만 보여줌
+  if (!iso) return ''
+  const d = new Date(iso.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 function savedLabel(iso: string | null | undefined) {
   return absoluteTime(iso)
 }
@@ -329,7 +336,7 @@ function MentorReviews({ reviews, completed }: { reviews: Review[]; completed: n
   const avg = rated.length ? (rated.reduce((sum, review) => sum + (review.rating || 0), 0) / rated.length).toFixed(1) : null
   const tagCounts = REVIEW_TAGS.map(tag => ({ tag, count: reviews.filter(review => review.tags?.includes(tag)).length })).filter(item => item.count)
   return <section className="result-section"><h2>받은 이용 후기</h2><div className="review-summary"><span><b>{avg ? `★ ${avg}` : '-'}</b>평균 만족도</span><span><b>{reviews.length}개</b>받은 후기</span><span><b>{completed}번</b>마친 학습</span></div><TagCounts items={tagCounts} />
-    {reviews.length ? reviews.map(review => <article className="review" key={review.id}><div className="review-head">{review.rating ? <Stars value={review.rating} /> : null}<strong>{review.learner_name}</strong>{review.revisit === 1 && <span className="badge">다시 배우고 싶어요</span>}<small>{review.created_at?.slice(0, 10)}</small></div>{review.content && <p>{review.content}</p>}{review.tags?.length ? <div className="chips">{review.tags.map(tag => <span key={tag}>{tag}</span>)}</div> : null}</article>) : <p className="empty">아직 받은 이용 후기가 없습니다. 수강생이 학습을 마치면 후기를 남길 수 있어요.</p>}</section>
+    {reviews.length ? reviews.map(review => <article className="review" key={review.id}><div className="review-head">{review.rating ? <Stars value={review.rating} /> : null}<strong>{review.learner_name}</strong>{review.revisit === 1 && <span className="badge">다시 배우고 싶어요</span>}<small>{localDate(review.created_at)}</small></div>{review.content && <p>{review.content}</p>}{review.tags?.length ? <div className="chips">{review.tags.map(tag => <span key={tag}>{tag}</span>)}</div> : null}</article>) : <p className="empty">아직 받은 이용 후기가 없습니다. 수강생이 학습을 마치면 후기를 남길 수 있어요.</p>}</section>
 }
 function TeamOperations({ headers }: { headers: () => Record<string, string> }) {
   const [data, setData] = useState<any>(null)
@@ -351,7 +358,7 @@ function TeamOperations({ headers }: { headers: () => Record<string, string> }) 
     <p className="ops-funnel"><span>요청 결과 ·</span><span>대기 <b>{s.pending}</b></span><span>거절 <b>{s.rejected}</b></span><span>응답 없음 <b>{s.expired}</b></span><span>요청 취소 <b>{s.learner_cancelled}</b></span><span>수락 후 취소 <b>{s.cancelled_after_accept}</b></span></p>
     <div className="table-scroll"><table className="ops-table"><thead><tr><th>멘토</th><th>요청</th><th>수락</th><th>완료</th><th>양쪽 확인</th><th>후기</th><th>평균 별점</th><th>재이용</th></tr></thead><tbody>{data.mentors.map((m: any) => <tr key={m.name}><td>{m.name}{m.verified ? '' : <small> (확인 전)</small>}</td><td>{m.requests}</td><td>{m.accepted}</td><td>{m.completed}</td><td>{m.both_confirmed}</td><td>{m.reviews}</td><td>{m.avg_rating ? `★ ${Number(m.avg_rating).toFixed(1)}` : '-'}</td><td>{m.revisit_percent != null ? `${m.revisit_percent}%` : '-'}</td></tr>)}</tbody></table></div>
     <h3>전체 후기 ({data.reviews.length})</h3>
-    {data.reviews.length ? data.reviews.map((review: any) => <article key={review.id} className={`review ${review.hidden ? 'is-hidden' : ''}`}><div className="review-head">{review.rating ? <Stars value={review.rating} /> : null}<strong>{review.mentor_name || '삭제된 멘토'}</strong>{review.revisit === 1 && <span className="badge">재이용 의향</span>}<small>{review.created_at?.slice(0, 10)}{review.hidden ? ' · 숨김' : ''}</small><button className="outline press review-hide" onClick={() => toggleHidden(review)}>{review.hidden ? '다시 보이기' : '숨기기'}</button></div>{review.content && <p>{review.content}</p>}{review.tags?.length ? <div className="chips">{review.tags.map((tag: string) => <span key={tag}>{tag}</span>)}</div> : null}</article>) : <p className="empty">아직 후기가 없어요.</p>}
+    {data.reviews.length ? data.reviews.map((review: any) => <article key={review.id} className={`review ${review.hidden ? 'is-hidden' : ''}`}><div className="review-head">{review.rating ? <Stars value={review.rating} /> : null}<strong>{review.mentor_name || '삭제된 멘토'}</strong>{review.revisit === 1 && <span className="badge">재이용 의향</span>}<small>{localDate(review.created_at)}{review.hidden ? ' · 숨김' : ''}</small><button className="outline press review-hide" onClick={() => toggleHidden(review)}>{review.hidden ? '다시 보이기' : '숨기기'}</button></div>{review.content && <p>{review.content}</p>}{review.tags?.length ? <div className="chips">{review.tags.map((tag: string) => <span key={tag}>{tag}</span>)}</div> : null}</article>) : <p className="empty">아직 후기가 없어요.</p>}
   </section>
 }
 function Header({ user, onAuth, onLogout, onLogoTap }: { user?: User | null; onAuth?: () => void; onLogout?: () => void; onLogoTap?: () => void }) { return <header><div className="container header-inner"><button type="button" className="brand brand-button" onClick={onLogoTap}><span>배움</span>잇다 <b>AI</b></button><div className="header-actions">{user ? <><span className="header-note">{user.role === 'mentor' ? '멘토' : '수강생'} {user.nickname}님</span><button className="header-logout press" onClick={onLogout}>로그아웃</button></> : onAuth ? <button className="header-auth press" onClick={onAuth}>가입 · 로그인</button> : null}</div></div></header> }

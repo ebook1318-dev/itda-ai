@@ -1216,9 +1216,19 @@ def pending_sweep():
                 recipients.append((u["email"], f"[배움잇다 AI] {subject}", body + MAIL_FOOTER))
     for to, subject, body in recipients:
         send_mail(to, subject, body)
+def cleanup_auth_tables():
+    """끝난 출입증과 풀린 로그인 제한 기록을 지웁니다 (어느 서버에서 돌아도 안전)."""
+    now = time.time()
+    with get_db() as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+        conn.execute("DELETE FROM login_attempts WHERE locked_until IS NOT NULL AND locked_until < ?", (now,))
 def _sweep_loop():
     while True:
         time.sleep(600)
+        try:
+            cleanup_auth_tables()
+        except Exception as error:
+            print(f"[CLEANUP] 실패: {type(error).__name__}: {error}")
         try:
             pending_sweep()
         except Exception as error:  # 알림이 실패해도 서버는 계속
@@ -1517,6 +1527,9 @@ def create_learning_request(data: LearningRequestInput, background: BackgroundTa
         pending = conn.execute("SELECT id FROM learning_requests WHERE user_id=? AND status='pending' LIMIT 1", (data.user_id,)).fetchone()
         if pending:
             raise HTTPException(400, "대기중인 멘토 요청이 있어 수락·거절·취소 전에는 새 멘토 요청을 보낼 수 없습니다.")
+        ongoing = conn.execute("SELECT id FROM learning_requests WHERE user_id=? AND mentor_id=? AND status='confirmed' LIMIT 1", (data.user_id, data.mentor_id)).fetchone()
+        if ongoing:
+            raise HTTPException(400, "이 멘토님과 진행 중인 학습이 있어요. '내 기록'에서 학습을 마치거나 취소한 뒤 다시 요청해 주세요.")
         cursor = conn.execute("""INSERT INTO learning_requests (user_id,mentor_id,space_id,tool,level,devices,time_slots,neighborhoods,keyword)
             VALUES (?,?,?,?,?,?,?,?,?)""", (data.user_id, data.mentor_id, data.space_id, data.tool, data.level, ",".join(data.devices), ",".join(data.time_slots), ",".join(data.neighborhoods), data.keyword))
         learner, mentor_uid = display_name(conn, data.user_id), mentor_user_id(conn, data.mentor_id)
