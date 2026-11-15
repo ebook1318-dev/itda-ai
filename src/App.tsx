@@ -110,7 +110,7 @@ export default function App() {
   const notifyOk = (text: string) => { setMessage(text); setOkMessage(text) }
   const messageOk = message !== '' && message === okMessage
   const update = <K extends keyof FormValues>(key: K, value: FormValues[K]) => setValues(previous => ({ ...previous, [key]: value }))
-  const openTeamAccess = () => { setTeamPassword(''); setTeamAccessMessage(''); setTeamView('access') }
+  const openTeamAccess = () => { setTeamPassword(''); setTeamAccessMessage(''); setMessage(''); setTeamView('access') }
   const handleLogoTap = () => { const now = Date.now(); logoTapTimes.current = [...logoTapTimes.current.filter(time => now - time < 1500), now]; if (logoTapTimes.current.length === 5) { logoTapTimes.current = []; openTeamAccess(); return } goHome() }
   const goHome = () => { if (showContact) closeContact(); if (showPolicy) { try { window.history.replaceState(null, '', window.location.pathname) } catch { /* 무시 */ } setShowPolicy(false) } if (!user) { setAuthOpen(true); return } setAuthOpen(false); setReviewingRequest(null); if (user.role === 'mentor') setMentorHomeTick(tick => tick + 1); else startNewSearch() }
   const closeTeamAccess = () => setTeamView('none')
