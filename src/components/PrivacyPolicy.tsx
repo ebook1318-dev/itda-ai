@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react'
+import { api } from '../lib/api'
 // 개인정보처리방침 — 사이트 하단 링크와 가입 안내의 '전문 보기'에서 열립니다 (#privacy).
 // ⚠️ 바뀌는 내용이 있으면 이 파일과 시행일을 함께 고쳐 주세요.
-//   - 10조 보호책임자 성명·이메일은 최종 제출 전에 실제 값으로 바꿔야 합니다.
-const EFFECTIVE_DATE = '2026년 11월 14일'
+//   - 10조 보호책임자 이메일은 서버 설정 CONTACT_EMAIL 값을 보여줍니다.
+const EFFECTIVE_DATE = '2026년 11월 18일'
 
 const TRANSFERS = [
   { to: 'Render', country: '싱가포르', items: '서비스 이용 정보 전반, 접속 기록', purpose: '웹 서버 운영' },
@@ -11,6 +13,8 @@ const TRANSFERS = [
 ]
 
 export default function PrivacyPolicy({ onClose }: { onClose: () => void }) {
+  const [contactEmail, setContactEmail] = useState('')
+  useEffect(() => { api('config').then(r => r.json()).then(data => setContactEmail(data.contact_email || '')).catch(() => setContactEmail('')) }, [])
   return <main className="container privacy-page">
     <button className="outline press" onClick={onClose}>← 돌아가기</button>
     <article>
@@ -25,19 +29,21 @@ export default function PrivacyPolicy({ onClose }: { onClose: () => void }) {
         <li>추천 이용: 배우고 싶은 내용, AI 도구, 현재 수준, 사용 기기, 가능한 시간, 가능한 동</li>
         <li>멘토 프로필: 가능한 AI 도구, 가르칠 수 있는 주제·수준, 소개글, 사용 기기, 가능한 시간, 활동 동</li>
         <li>서비스 이용 중 생성: 학습 요청 내역, 약속 쪽지, 이용 후기</li>
+        <li>멘토 확인(멘토가 운영팀 메일로 직접 보낸 경우): 이력서(경력·활동 경험), 포트폴리오(작품·링크), 보낸 메일 주소</li>
         <li>자동 생성: 접속 기록(IP 주소, 접속 시간 등). 서버 운영 업체의 기록으로 남을 수 있습니다.</li>
         <li>자동 생성: 로그인 유지 정보(무작위 출입증을 암호화한 값, 최대 30일). 로그아웃·비밀번호 재설정·탈퇴 시 즉시 삭제합니다.</li>
         <li>전화번호 등 연락처는 수집하지 않으며, 쪽지와 소개글에도 입력할 수 없도록 막고 있습니다.</li>
       </ul>
 
       <h2>2. 처리 목적</h2>
-      <p>회원 식별과 관리, 멘토·학습 공간 추천, 매칭 요청·수락·쪽지 알림 메일 발송, 문의 응대, 부정 이용 방지</p>
+      <p>회원 식별과 관리, 멘토 자격 확인, 멘토·학습 공간 추천, 매칭 요청·수락·쪽지 알림 메일 발송, 문의 응대, 부정 이용 방지</p>
 
       <h2>3. 보유 기간과 파기</h2>
       <ul>
         <li>회원 탈퇴 시 이메일과 비밀번호를 즉시 삭제하고, 닉네임은 "탈퇴한 회원"으로 바꿉니다.</li>
         <li>로그인 실패 기록(닉네임별 틀린 횟수)은 로그인에 성공하거나 10분 제한이 끝나면 지웁니다.</li>
         <li>학습 요청, 쪽지, 후기는 상대방의 기록을 보존하기 위해 작성자를 알 수 없게 처리하여 서비스 종료 시까지 보관합니다.</li>
+        <li>멘토 확인을 위해 받은 이력서·포트폴리오는 확인이 끝나면 30일 안에 삭제합니다.</li>
         <li>서비스 운영이 끝나면 모든 개인정보를 지체 없이 파기합니다.</li>
       </ul>
 
@@ -75,8 +81,8 @@ export default function PrivacyPolicy({ onClose }: { onClose: () => void }) {
 
       <h2>10. 개인정보 보호책임자</h2>
       <ul>
-        <li>성명: ㅇㅇㅇ (잇다 AI 팀)</li>
-        <li>이메일: ㅇㅇㅇ</li>
+        <li>성명: 이보옥 (잇다 AI 팀)</li>
+        <li>이메일: {contactEmail || '준비 중 (사이트 하단 운영팀 문의에서 안내)'}</li>
       </ul>
 
       <h2>11. 권익 침해 구제</h2>
