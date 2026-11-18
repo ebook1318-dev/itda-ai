@@ -1700,8 +1700,10 @@ def create_learning_request(data: LearningRequestInput, background: BackgroundTa
         cursor = conn.execute("""INSERT INTO learning_requests (user_id,mentor_id,space_id,tool,level,devices,time_slots,neighborhoods,keyword,paid_space_agreed)
             VALUES (?,?,?,?,?,?,?,?,?,?)""", (data.user_id, data.mentor_id, data.space_id, data.tool, data.level, ",".join(data.devices), ",".join(data.time_slots), ",".join(data.neighborhoods), data.keyword, paid_agreed))
         learner, mentor_uid = display_name(conn, data.user_id), mentor_user_id(conn, data.mentor_id)
+    paid_line = ("\n선택한 장소는 유료 공간이에요. 이용료는 수강생 부담을 권장하지만, 누가 낼지는 수락 후 약속 쪽지로 함께 정해 주세요."
+                 if paid_agreed else "")
     notify_user(background, mentor_uid, "새 학습 요청이 도착했어요",
-                f"{learner}님이 학습을 요청했어요.\n배움잇다 AI에 로그인해 요청 내용을 확인하고 수락 또는 거절해 주세요.")
+                f"{learner}님이 학습을 요청했어요.{paid_line}\n배움잇다 AI에 로그인해 요청 내용을 확인하고 수락 또는 거절해 주세요.")
     return {"id": cursor.lastrowid, "status": "pending"}
 def mark_learning_done(conn, row, side: str):
     """수강생(learner) 또는 멘토(mentor)가 '학습을 마쳤어요'를 누름. 처음 누른 사람이 학습을 완료로 바꾸고,

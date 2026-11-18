@@ -7,6 +7,7 @@ type Props = {
   onSkip?: () => void
   skipped?: boolean
   aiRanked?: boolean
+  kind?: 'mentor' | 'space'
 }
 function tierFromPercent(percent: number): MatchTier {
   return percent >= 70 ? 'match' : percent >= 45 ? 'partial' : 'miss'
@@ -45,13 +46,20 @@ function FacilityChips({ info }: { info?: Candidate['facility_info'] }) {
   if (!info) return null
   return <div className="facility-chips">{(Object.keys(FACILITY_NAMES) as (keyof typeof FACILITY_NAMES)[]).map(key => <span key={key} className={`facility-chip ${info[key]}`}>{FACILITY_NAMES[key]} {FACILITY_STATUS[info[key]]}</span>)}</div>
 }
+// 예전 데이터는 '시설' 칸에 '종류 · 주소'가 함께 들어 있어, 주소는 따로 보여주고 종류만 남깁니다.
+function facilityLabel(item: Candidate) {
+  const address = item.regions.join(' ').trim()
+  const parts = (item.facility || '').split(' · ').map(part => part.trim()).filter(part => part && part !== address)
+  return parts.join(' · ')
+}
 function FeeBadge({ type }: { type?: string }) {
   return type === 'paid' ? <span className="fee-badge paid">유료</span> : <span className="fee-badge free">무료</span>
 }
 function CandidateDetails({ item }: { item: Candidate }) {
   if (item.kind === 'space') return <dl className="candidate-details space-details">
     <div className="fee-row"><dt>요금</dt><dd>{item.fee_note || (item.fee_type === 'paid' ? '요금은 매장에서 직접 확인해 주세요' : '무료')}</dd></div>
-    <div><dt>시설</dt><dd>{item.facility || '학습 공간'}</dd></div>
+    <div><dt>시설</dt><dd>{facilityLabel(item) || '학습 공간'}</dd></div>
+    {item.regions.length > 0 && <div><dt>주소</dt><dd>{item.regions.join(' ')}</dd></div>}
     <div><dt>운영시간</dt><dd>{item.operating_hours || '공식 안내에서 확인'}</dd></div>
     <div><dt>이용 절차</dt><dd>{item.usage_procedure || '공식 안내에서 확인'}</dd></div>
     <div className="facility-row"><dt>편의시설</dt><dd><FacilityChips info={item.facility_info} /></dd></div>
@@ -64,10 +72,10 @@ function CandidateDetails({ item }: { item: Candidate }) {
     <div><dt>활동 지역</dt><dd>{item.regions.join(' · ')}</dd></div>
   </dl>
 }
-export default function RecommendationList({ title, items, selected, onSelect, onSkip, skipped, aiRanked }: Props) {
-  const kind = items[0]?.kind === 'space' ? 'space' : 'mentor'
+export default function RecommendationList({ title, items, selected, onSelect, onSkip, skipped, aiRanked, kind: kindProp }: Props) {
+  const kind = kindProp ?? (items[0]?.kind === 'space' ? 'space' : 'mentor')
   const isSpace = kind === 'space'
-  const paidList = isSpace && items.some(item => item.fee_type === 'paid')
+  const paidList = isSpace && (items.some(item => item.fee_type === 'paid') || title.includes('유료'))
   const hasSelection = Boolean(selected && items.some(item => item.id === selected.id && item.kind === selected.kind))
   const effectiveDone = hasSelection || (isSpace && Boolean(skipped))
   // 서버가 정한 순서(AI 매칭 순서)를 그대로 유지하고, 선택한 후보만 맨 위로 올립니다.
