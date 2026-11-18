@@ -45,8 +45,12 @@ function FacilityChips({ info }: { info?: Candidate['facility_info'] }) {
   if (!info) return null
   return <div className="facility-chips">{(Object.keys(FACILITY_NAMES) as (keyof typeof FACILITY_NAMES)[]).map(key => <span key={key} className={`facility-chip ${info[key]}`}>{FACILITY_NAMES[key]} {FACILITY_STATUS[info[key]]}</span>)}</div>
 }
+function FeeBadge({ type }: { type?: string }) {
+  return type === 'paid' ? <span className="fee-badge paid">유료</span> : <span className="fee-badge free">무료</span>
+}
 function CandidateDetails({ item }: { item: Candidate }) {
   if (item.kind === 'space') return <dl className="candidate-details space-details">
+    <div className="fee-row"><dt>요금</dt><dd>{item.fee_note || (item.fee_type === 'paid' ? '요금은 매장에서 직접 확인해 주세요' : '무료')}</dd></div>
     <div><dt>시설</dt><dd>{item.facility || '학습 공간'}</dd></div>
     <div><dt>운영시간</dt><dd>{item.operating_hours || '공식 안내에서 확인'}</dd></div>
     <div><dt>이용 절차</dt><dd>{item.usage_procedure || '공식 안내에서 확인'}</dd></div>
@@ -63,6 +67,7 @@ function CandidateDetails({ item }: { item: Candidate }) {
 export default function RecommendationList({ title, items, selected, onSelect, onSkip, skipped, aiRanked }: Props) {
   const kind = items[0]?.kind === 'space' ? 'space' : 'mentor'
   const isSpace = kind === 'space'
+  const paidList = isSpace && items.some(item => item.fee_type === 'paid')
   const hasSelection = Boolean(selected && items.some(item => item.id === selected.id && item.kind === selected.kind))
   const effectiveDone = hasSelection || (isSpace && Boolean(skipped))
   // 서버가 정한 순서(AI 매칭 순서)를 그대로 유지하고, 선택한 후보만 맨 위로 올립니다.
@@ -74,9 +79,9 @@ export default function RecommendationList({ title, items, selected, onSelect, o
   }).map(entry => entry.item)
   const countLabel = isSpace ? '곳' : '명'
   return <section className={`result-section ${kind}-results`} aria-labelledby={`${title}-heading`}>
-    <div className="section-head"><div><p className="eyebrow">우리동네 인근 {isSpace ? '공공 학습 공간' : '멘토'} 후보</p><h2 id={`${title}-heading`}>{title}</h2></div><span className="count">{items.length}{countLabel}</span></div>
+    <div className="section-head"><div><p className="eyebrow">우리동네 인근 {isSpace ? (paidList ? '유료 학습 공간' : '무료 학습 공간') : '멘토'} 후보</p><h2 id={`${title}-heading`}>{title}</h2></div><span className="count">{items.length}{countLabel}</span></div>
     {!isSpace && aiRanked && <p className="list-notice ai-notice">✨ 적어주신 배우고 싶은 내용을 AI가 멘토의 주제·소개글과 비교하고, 시간·동 조건까지 함께 보고 순서를 정했어요.</p>}
-    {isSpace && <p className="list-notice">아래 공간은 추천 후보이며, 실제 이용 가능 여부는 공식 페이지에서 다시 확인해주세요.</p>}
+    {isSpace && <p className="list-notice">{paidList ? '요금과 운영시간은 매장마다 달라요. 이용 전에 매장에 직접 확인해 주세요.' : '아래 공간은 추천 후보이며, 실제 이용 가능 여부는 공식 페이지에서 다시 확인해주세요.'}</p>}
     <div className="candidate-list">
       {!effectiveDone && (isSpace && onSkip
         ? <p className="selection-guide sticky" role="status"><span>선택해 주세요.</span><button className="outline press" onClick={onSkip}>추천 공간 선택 없이 진행 →</button></p>
@@ -85,12 +90,12 @@ export default function RecommendationList({ title, items, selected, onSelect, o
       {items.length === 0 ? <div className="empty"><strong>추천 후보가 아직 없습니다.</strong><p>검색 조건을 조금 바꾸어 다시 찾아보세요.</p></div> : orderedItems.map(item => {
         const chosen = selected?.id === item.id && selected?.kind === item.kind
         return <article className={`candidate ${item.kind} ${chosen ? 'chosen' : ''}`} key={item.id}>
-          <div className="candidate-top"><h3>{item.name}</h3><MatchBadge percent={item.match_percent}/></div>
+          <div className="candidate-top"><h3>{item.name}{item.kind === 'space' && <> <FeeBadge type={item.fee_type}/></>}</h3><MatchBadge percent={item.match_percent}/></div>
           <MetaChips item={item}/>
           <RecommendReason item={item}/>
           <CandidateDetails item={item}/>
           <div className="source"><span>출처 · {item.source}</span><span>기준일 · {item.source_date}</span></div>
-          <div className="candidate-actions"><button className={chosen ? 'primary press' : 'outline press'} onClick={() => onSelect(item)}>{chosen ? '선택됨' : `${isSpace ? '공간' : '멘토'} 선택`}</button></div>
+          <div className="candidate-actions">{item.kind === 'space' && item.official_url && <a className="outline press map-link" href={item.official_url} target="_blank" rel="noreferrer">{item.fee_type === 'paid' ? '지도에서 요금·위치 확인' : '공식 안내 보기'}</a>}<button className={chosen ? 'primary press' : 'outline press'} onClick={() => onSelect(item)}>{chosen ? '선택됨' : `${isSpace ? '공간' : '멘토'} 선택`}</button></div>
         </article>
       })}
     </div>

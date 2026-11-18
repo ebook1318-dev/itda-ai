@@ -8,6 +8,7 @@ import re
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 import time
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends, Request
 import contextvars
@@ -42,7 +43,7 @@ NEIGHBORHOOD_COORDS = {
     "쌍용동": (36.8065, 127.1180), "성정동": (36.8135, 127.1223), "백석동": (36.8257, 127.1322),
     "두정동": (36.8389, 127.1310), "와촌동": (36.8043, 127.1108), "차암동": (36.8300, 127.1210),
     "업성동": (36.8420, 127.1430), "신당동": (36.8168, 127.1308), "부대동": (36.8470, 127.1480),
-    "성성동": (36.8080, 127.0980), "성거읍": (36.8870, 127.1660), "입장면": (36.9390, 127.1780),
+    "성성동": (36.8080, 127.0980), "성거읍": (36.8870, 127.1660), "입장면": (36.9100, 127.2300),
     "직산읍": (36.8690, 127.1860), "성환읍": (36.9290, 127.1480),
     "대흥동": (36.8102, 127.1479), "성황동": (36.8160, 127.1540), "문화동": (36.8140, 127.1510),
     "사직동": (36.8070, 127.1550), "영성동": (36.8120, 127.1570), "오룡동": (36.8030, 127.1600),
@@ -50,9 +51,9 @@ NEIGHBORHOOD_COORDS = {
     "삼룡동": (36.7900, 127.1500), "구룡동": (36.7870, 127.1570),
     "신방동": (36.7990, 127.1350), "용곡동": (36.7930, 127.1280), "봉명동": (36.8089, 127.1469),
     "다가동": (36.8050, 127.1430), "신부동": (36.8057, 127.1487), "안서동": (36.7870, 127.1350),
-    "광덕면": (36.8650, 127.2250), "동면": (36.7900, 127.2250),
-    "목천읍": (36.8070, 127.2280), "병천면": (36.8450, 127.2650), "북면": (36.8900, 127.0900),
-    "성남면": (36.7450, 127.2350), "수신면": (36.7500, 127.2800), "풍세면": (36.7390, 127.2050),
+    "광덕면": (36.6900, 127.0600), "동면": (36.7900, 127.2250),
+    "목천읍": (36.8070, 127.2280), "병천면": (36.8450, 127.2650), "북면": (36.8000, 127.2600),
+    "성남면": (36.7450, 127.2350), "수신면": (36.7500, 127.2800), "풍세면": (36.7400, 127.1100),
 }
 DEFAULT_COORDS = (36.8151, 127.1139)  # 천안시청 인근 (동 정보가 없을 때의 기본값)
 def coords_for_neighborhoods(neighborhoods: list[str]):
@@ -148,6 +149,70 @@ def migrate_space_id_optional(conn):
     cols_csv = ", ".join(columns)
     conn.execute(f"INSERT INTO learning_requests ({cols_csv}) SELECT {cols_csv} FROM learning_requests_old")
     conn.execute("DROP TABLE learning_requests_old")
+# ── 추가 공간 (11/18) ──────────────────────────────────────────────────────
+# 1:1·소모임 수업은 말을 해야 해서 '대화가 가능한 곳'만 넣었습니다 (조용히 해야 하는 열람실 위주 스터디카페 제외).
+# 유료 공간은 요금이 매장마다 달라 '매장에서 직접 확인'으로 표시합니다. 팀이 확인하면 팀 화면 공간 탭에서 요금 설명을 고칠 수 있어요.
+# 운영시간은 지도 정보(2026-11-18 확인) 기준이며 바뀔 수 있어요. 좌표는 주소로 자동 검색합니다.
+ALL_WEEK = "평일 오전,평일 오후,평일 저녁,주말 오전,주말 오후"
+FEE_CAFE = "음료 주문 후 이용 · 요금은 매장에서 직접 확인해 주세요"
+FEE_ROOM = "스터디룸 시간제 · 요금은 매장에서 직접 확인해 주세요"
+def naver_map_url(query):
+    return "https://map.naver.com/p/search/" + urllib.parse.quote(query)
+EXTRA_SPACES = [
+    # name, 동, 주소, 종류, 가능 시간, 운영시간, 이용 방법, fee_type, fee_note, 링크
+    ("천안중앙도서관 러닝커먼스", "원성동", "충청남도 천안시 동남구 중앙로 118", "공공도서관 1층 학습 공유 공간",
+     ALL_WEEK, "매일 08:00~22:00 (매월 둘째·넷째 월요일·공휴일 휴관)", "예약 없이 이용하는 열린 학습 공간 · 이용 전 도서관 공식 안내 확인",
+     "free", "무료", "https://www.cheonan.go.kr/lib.do"),
+    ("디오스퀘어", "두정동", "충청남도 천안시 서북구 두정동", "카페 · 모임용 룸",
+     "평일 오후,평일 저녁,주말 오후", "매일 12:00~23:30 (지도 정보 기준)", "모임용 룸 이용 가능 여부는 매장에 직접 확인",
+     "paid", FEE_CAFE, naver_map_url("천안 두정동 디오스퀘어")),
+    ("비브레이브 천안점", "백석동", "충청남도 천안시 서북구 한들3로 36-16", "베이커리 카페 (2층)",
+     ALL_WEEK, "매일 09:00~22:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
+     "paid", FEE_CAFE, naver_map_url("비브레이브 천안점")),
+    ("네이처스터디카페 천안불당점", "불당동", "충청남도 천안시 서북구 검은들3길 42", "스터디카페 · 스터디룸(대화 가능)",
+     ALL_WEEK, "24시간 (지도 정보 기준)", "스터디룸 예약 후 이용 (TV 모니터 연결 가능)",
+     "paid", FEE_ROOM, naver_map_url("네이처스터디카페 천안불당점")),
+    ("카페 마젠타", "성성동", "충청남도 천안시 서북구 성성2길 81", "카페",
+     ALL_WEEK, "매일 09:00~21:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
+     "paid", FEE_CAFE, naver_map_url("천안 카페 마젠타")),
+    ("카페 코발트", "성환읍", "충청남도 천안시 서북구 성환읍 연암율금로 512-10", "카페 · 단체석 있음",
+     ALL_WEEK, "매일 10:00~22:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
+     "paid", FEE_CAFE, naver_map_url("성환 카페 코발트")),
+    ("인트로", "입장면", "충청남도 천안시 서북구 입장면 기로리 86-33", "카페 (2층)",
+     ALL_WEEK, "매일 10:00~21:30 (지도 정보 기준)", "음료 주문 후 자리 이용",
+     "paid", FEE_CAFE, naver_map_url("천안 입장면 카페 인트로")),
+    ("이디야커피 천안직산점", "직산읍", "충청남도 천안시 서북구 직산읍 삼은리 311", "카페 (2층, 와이파이·콘센트)",
+     ALL_WEEK, "매일 10:00~22:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
+     "paid", FEE_CAFE, naver_map_url("이디야커피 천안직산점")),
+    ("로그인 스터디카페", "신방동", "충청남도 천안시 동남구 통정11로 57", "스터디카페 · 스터디룸(대화 가능)",
+     ALL_WEEK, "24시간 (지도 정보 기준)", "스터디룸 예약 후 이용",
+     "paid", FEE_ROOM, naver_map_url("천안 신방동 로그인 스터디카페")),
+    ("카페 삼룡동", "삼룡동", "충청남도 천안시 동남구 삼룡동 322-1", "브런치 카페",
+     ALL_WEEK, "매일 09:30~22:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
+     "paid", FEE_CAFE, naver_map_url("천안 카페 삼룡동")),
+    ("프리퍼팩토리", "목천읍", "충청남도 천안시 동남구 목천읍 종합휴양지로 77", "카페 (2층)",
+     "평일 오전,평일 오후,주말 오전,주말 오후", "매일 09:00~19:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
+     "paid", FEE_CAFE, naver_map_url("천안 목천 프리퍼팩토리")),
+    ("화진담", "광덕면", "충청남도 천안시 동남구 광덕면 보산원2길 30-4", "카페",
+     "평일 오후,주말 오후", "매일 11:00~20:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
+     "paid", FEE_CAFE, naver_map_url("천안 광덕면 화진담")),
+]
+def restore_extra_spaces(conn):
+    """추가 공간을 넣거나 기본 정보를 맞춥니다. 요금 설명(fee_note)은 팀이 고쳤을 수 있어 새로 넣을 때만 채워요."""
+    existing = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM candidates WHERE kind='space' AND mentor_user_id IS NULL").fetchall()}
+    today = "2026-11-18"
+    statements = []
+    for name, dong, address, facility, times, hours, procedure, fee_type, fee_note, url in EXTRA_SPACES:
+        source = "천안시 공식 안내" if fee_type == "free" else "지도 정보 (요금·운영시간은 매장에서 확인)"
+        common = ("ChatGPT,캡컷,캔바", "입문,초급,중급", "스마트폰,노트북,태블릿", address, times, url, source, today,
+                  f"{facility} · {address}", "지도에서 위치 확인", dong, 0, "not_applicable", f"{facility} · {address}", hours, procedure)
+        if name in existing:
+            statements.append(("""UPDATE candidates SET tools=?, levels=?, devices=?, regions=?, times=?, official_url=?, source=?, source_date=?, description=?, distance=?, neighborhood=?, consent_confirmed=?, verification_status=?, facility=?, operating_hours=?, usage_procedure=?, fee_type=? WHERE id=?""",
+                               (*common, fee_type, existing[name])))
+        else:
+            statements.append(("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,consent_confirmed,verification_status,facility,operating_hours,usage_procedure,fee_type,fee_note) VALUES ('space',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                               (name, *common, fee_type, fee_note)))
+    run_batch(conn, statements)
 def restore_default_candidates(conn):
     """Keep existing records and refresh only verified public-space records."""
     rows = [
@@ -526,6 +591,11 @@ def init_db():
         add_column(conn, "candidates", "facility", "TEXT DEFAULT ''")
         add_column(conn, "candidates", "operating_hours", "TEXT DEFAULT ''")
         add_column(conn, "candidates", "usage_procedure", "TEXT DEFAULT ''")
+        # 공간 요금: free(무료 공공공간) · paid(카페·스터디룸 등 유료). 요금 설명은 팀이 확인하면 팀 화면에서 고쳐요.
+        add_column(conn, "candidates", "fee_type", "TEXT DEFAULT 'free'")
+        add_column(conn, "candidates", "fee_note", "TEXT DEFAULT ''")
+        # 유료 공간으로 요청할 때 '이용료는 두 분이 협의' 안내에 동의한 기록
+        add_column(conn, "learning_requests", "paid_space_agreed", "INTEGER DEFAULT 0")
         add_column(conn, "learning_requests", "learner_note", "TEXT DEFAULT ''")
         add_column(conn, "learning_requests", "mentor_note", "TEXT DEFAULT ''")
         add_column(conn, "learning_requests", "learner_note_updated_at", "TEXT")
@@ -578,6 +648,7 @@ def init_db():
             pass
         conn.execute("DELETE FROM candidates WHERE source='임시 샘플 데이터 (실제 확인 필요)'")
         restore_default_candidates(conn)
+        restore_extra_spaces(conn)
 # ──────────────────────────────────────────────────────────────────────────────
 # 공간 위치·시설 정보
 #  좌표 출처: verified(공개 자료로 확인) · manual(팀이 직접 입력) > geocoded(주소 자동 검색) > approx(동 단위 근사)
@@ -593,6 +664,7 @@ KNOWN_SPACE_COORDS = {
     # 한국관광 정보(ktriptips.com, 관광공사 자료 기반) 지도 좌표로 확인 — 2026-11-13
     "천안중앙도서관": (36.8091750, 127.1535917, "공개 자료 확인: 천안중앙도서관 (중앙로 118)"),
     "천안시 중앙도서관 동아리실": (36.8091750, 127.1535917, "공개 자료 확인: 천안중앙도서관 (중앙로 118)"),
+    "천안중앙도서관 러닝커먼스": (36.8091750, 127.1535917, "공개 자료 확인: 천안중앙도서관 (중앙로 118) 1층"),
     "천안시 성정평생학습관": (36.8273340, 127.1362714, "공개 자료 확인: 천안시 시민문화여성회관 (성정중4길 29)"),
 }
 NOMINATIM_URL = (os.environ.get("NOMINATIM_URL") or "https://nominatim.openstreetmap.org").rstrip("/")
@@ -783,6 +855,7 @@ class LearningRequestInput(BaseModel):
     user_id: int
     mentor_id: int
     space_id: int | None = None
+    paid_space_agreed: bool = False  # 유료 공간이면 '이용료는 두 분이 협의' 안내에 동의해야 요청 가능
     tool: str = ""
     level: str = ""
     devices: list[str] = []
@@ -905,6 +978,8 @@ def candidate_item(row, request=None):
         item["lat"], item["lng"] = coords_for_neighborhoods(item["neighborhoods"])
         item["coord_source"] = "approx"
     if item["kind"] == "space":
+        item["fee_type"] = item.get("fee_type") or "free"
+        item["fee_note"] = item.get("fee_note") or ("무료" if item["fee_type"] == "free" else "요금은 매장에서 직접 확인해 주세요")
         item["facility_info"] = _space_facility.get(item["name"]) or derive_facility(row)
     item["consent_confirmed"] = bool(item.get("consent_confirmed", 0))
     if item["kind"] == "mentor" and item.get("verification_status") != "verified":
@@ -1054,6 +1129,7 @@ def _space_for_prompt(item):
         "id": item["id"], "이름": item["name"], "시설": item.get("facility") or "", "운영시간": item.get("operating_hours") or "",
         "이용 절차·장비": item.get("usage_procedure") or "", "가능 시간": item["times"], "동": item["neighborhoods"],
         "편의시설": {FACILITY_LABEL[k]: STATUS_LABEL_KO[v] for k, v in (item.get("facility_info") or {}).items()},
+        "요금": "무료" if item.get("fee_type") == "free" else "유료 (요금은 매장에서 직접 확인)",
     }
 FACILITY_LABEL = {"indoor": "실내", "desk": "책상", "wifi": "와이파이", "outlet": "콘센트"}
 STATUS_LABEL_KO = {"yes": "있음", "no": "없음", "unknown": "확인 필요"}
@@ -1092,6 +1168,7 @@ def build_matching_prompt(request, mentors, spaces):
 - 추천 이유는 수강생에게 말하듯 친근한 한국어 한 문장으로, 내용이 맞는 점과 (있다면) 시간·동이 맞는 점을 함께 쓰세요.
 - 수강생이 고르지 않은 조건(사용 기기·가능 시간·가능한 동이 빈 목록)은 '맞는다', '만나기 좋다'고 쓰지 마세요.
   멘토 정보로만 알려줄 때는 "이 멘토님은 평일 저녁에 활동해요"처럼 멘토의 정보라는 것이 드러나게 쓰세요.
+- 유료 공간의 추천 이유에는 금액을 지어내지 말고, 요금은 매장에서 확인해야 한다는 점을 흐리지 마세요.
 - 수강생은 '수강생님' 또는 '~하시는 분'으로 부르고, '나', '저', '제가' 같은 1인칭은 쓰지 마세요."""
 
 def same_tool(item, request):
@@ -1575,17 +1652,21 @@ def recommendations(request: RecommendationRequest):
     # 공간: 기기·시간·동 점수로 상위 3곳 (공간은 '무엇을 배우나'보다 '어디서 할 수 있나'라서 규칙으로 고름)
     spaces = [candidate_item(row, request) for row in space_rows]
     # 점수가 같으면 수강생이 고른 동에서 가까운 곳부터. 조건에 맞는 곳이 3곳보다 적으면 가까운 순으로 채웁니다.
+    # 무료(공공)와 유료(카페·스터디룸)는 화면에서 버튼으로 나눠 보여주므로 각각 3곳씩 고릅니다.
     home = coords_for_neighborhoods(request.neighborhoods)
     distance = lambda sp: km_between((sp["lat"], sp["lng"]), home) if sp.get("lat") is not None else 999
-    picked = sorted([s for s in spaces if s["score"] >= 2], key=lambda x: (-x["score"], distance(x)))
-    if len(picked) < 3:
-        seen = {s["id"] for s in picked}
-        picked += sorted([s for s in spaces if s["id"] not in seen], key=distance)
-    picked = picked[:3]
+    def pick(pool):
+        chosen = sorted([s for s in pool if s["score"] >= 2], key=lambda x: (-x["score"], distance(x)))
+        if len(chosen) < 3:
+            seen = {s["id"] for s in chosen}
+            chosen += sorted([s for s in pool if s["id"] not in seen], key=distance)
+        return chosen[:3]
+    picked = pick([s for s in spaces if s["fee_type"] == "free"])
+    picked_paid = pick([s for s in spaces if s["fee_type"] != "free"])
     # 멘토: 규칙으로 도구를 거르고 → AI가 학습 내용과 조건을 보고 순위 결정 (공간 추천 이유도 같은 호출에서 작성)
     mentors = [candidate_item(row, request) for row in mentor_rows]
-    ranked, ai_used, ai_error = rank_mentors(mentors, request, use_ai=True, spaces=picked)
-    result = {"mentor": ranked[:2], "space": picked}
+    ranked, ai_used, ai_error = rank_mentors(mentors, request, use_ai=True, spaces=picked + picked_paid)
+    result = {"mentor": ranked[:2], "space": picked, "space_paid": picked_paid}
     return {
         "request_id": cursor.lastrowid,
         "request": {**request.model_dump(), "neighborhood": ", ".join(request.neighborhoods) or NEIGHBORHOOD},
@@ -1601,9 +1682,12 @@ def create_learning_request(data: LearningRequestInput, background: BackgroundTa
         # 학습 공간은 추천일 뿐이라 선택사항입니다 — 고른 경우에만 유효한 공간인지 확인합니다.
         space = None
         if data.space_id is not None:
-            space = conn.execute("SELECT id FROM candidates WHERE id=? AND kind='space'", (data.space_id,)).fetchone()
+            space = conn.execute("SELECT id, fee_type FROM candidates WHERE id=? AND kind='space'", (data.space_id,)).fetchone()
             if not space:
                 raise HTTPException(400, "선택한 학습 공간을 다시 확인해 주세요.")
+            if (space["fee_type"] or "free") != "free" and not data.paid_space_agreed:
+                raise HTTPException(400, "유료 공간이에요. 이용료 안내를 확인하고 동의해 주세요.")
+        paid_agreed = 1 if (space and (space["fee_type"] or "free") != "free") else 0
         if not user or not mentor:
             raise HTTPException(400, "선택한 멘토를 다시 확인해 주세요.")
         expire_stale_requests(conn)
@@ -1613,8 +1697,8 @@ def create_learning_request(data: LearningRequestInput, background: BackgroundTa
         ongoing = conn.execute("SELECT id FROM learning_requests WHERE user_id=? AND mentor_id=? AND status='confirmed' LIMIT 1", (data.user_id, data.mentor_id)).fetchone()
         if ongoing:
             raise HTTPException(400, "이 멘토님과 진행 중인 학습이 있어요. '내 기록'에서 학습을 마치거나 취소한 뒤 다시 요청해 주세요.")
-        cursor = conn.execute("""INSERT INTO learning_requests (user_id,mentor_id,space_id,tool,level,devices,time_slots,neighborhoods,keyword)
-            VALUES (?,?,?,?,?,?,?,?,?)""", (data.user_id, data.mentor_id, data.space_id, data.tool, data.level, ",".join(data.devices), ",".join(data.time_slots), ",".join(data.neighborhoods), data.keyword))
+        cursor = conn.execute("""INSERT INTO learning_requests (user_id,mentor_id,space_id,tool,level,devices,time_slots,neighborhoods,keyword,paid_space_agreed)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""", (data.user_id, data.mentor_id, data.space_id, data.tool, data.level, ",".join(data.devices), ",".join(data.time_slots), ",".join(data.neighborhoods), data.keyword, paid_agreed))
         learner, mentor_uid = display_name(conn, data.user_id), mentor_user_id(conn, data.mentor_id)
     notify_user(background, mentor_uid, "새 학습 요청이 도착했어요",
                 f"{learner}님이 학습을 요청했어요.\n배움잇다 AI에 로그인해 요청 내용을 확인하고 수락 또는 거절해 주세요.")
@@ -1685,7 +1769,7 @@ def history(user_id: int, me: dict = Depends(current_user)):
     same_user(me, user_id)
     with get_db() as conn:
         expire_stale_requests(conn)
-        requests = conn.execute("""SELECT lr.*, m.name AS mentor_name, s.name AS space_name, m.official_url AS mentor_url,
+        requests = conn.execute("""SELECT lr.*, m.name AS mentor_name, s.name AS space_name, s.fee_type AS space_fee_type, s.official_url AS space_url, m.official_url AS mentor_url,
             (SELECT r.rating FROM reviews r WHERE r.request_id=lr.id LIMIT 1) AS review_rating,
             (SELECT COUNT(*) FROM reviews r WHERE r.request_id=lr.id) AS review_count
             FROM learning_requests lr JOIN candidates m ON m.id=lr.mentor_id LEFT JOIN candidates s ON s.id=lr.space_id
@@ -1773,7 +1857,7 @@ def mentor_requests(user_id: int, me: dict = Depends(current_user)):
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (user_id,)).fetchone()
         if not mentor:
             return []
-        rows = conn.execute("""SELECT lr.*, CASE WHEN u.withdrawn_at IS NOT NULL THEN '탈퇴한 회원' ELSE u.nickname END AS learner_name, s.name AS space_name
+        rows = conn.execute("""SELECT lr.*, CASE WHEN u.withdrawn_at IS NOT NULL THEN '탈퇴한 회원' ELSE u.nickname END AS learner_name, s.name AS space_name, s.fee_type AS space_fee_type, s.official_url AS space_url
             FROM learning_requests lr JOIN users u ON u.id=lr.user_id LEFT JOIN candidates s ON s.id=lr.space_id
             WHERE lr.mentor_id=? ORDER BY lr.id DESC""", (mentor["id"],)).fetchall()
     return [{**dict(row), "devices": as_list(row["devices"] or ""), "time_slots": as_list(row["time_slots"] or ""), "neighborhoods": as_list(row["neighborhoods"] or "")} for row in rows]
@@ -2009,7 +2093,8 @@ def team_spaces(x_team_password: str | None = Header(default=None)):
         out.append({"id": row["id"], "name": row["name"], "address": space_address(row), "neighborhood": row["neighborhood"],
                     "lat": item["lat"], "lng": item["lng"], "coord_source": item["coord_source"], "coord_note": geo.get("note", "아직 검색 전"),
                     "km_from_dong": round(km_between((item["lat"], item["lng"]), coords_for_neighborhoods(as_list(row["neighborhood"] or ""))), 1),
-                    "facility_info": item["facility_info"], "facility_source": "team" if row["name"] in _space_facility else "data"})
+                    "facility_info": item["facility_info"], "facility_source": "team" if row["name"] in _space_facility else "data",
+                    "fee_type": item["fee_type"], "fee_note": row["fee_note"] or "", "official_url": row["official_url"] or ""})
     return {"geocoding": _geocode_lock.locked(), "spaces": out}
 @app.put("/api/team/spaces/{space_id}/location")
 def team_space_location(space_id: int, data: SpaceLocationInput, x_team_password: str | None = Header(default=None)):
@@ -2037,6 +2122,24 @@ def team_space_facility(space_id: int, data: SpaceFacilityInput, x_team_password
         conn.execute("INSERT OR REPLACE INTO space_facility (name, indoor, desk, wifi, outlet, updated_at) VALUES (?,?,?,?,?,?)",
                      (row["name"], *values, time.strftime("%Y-%m-%d %H:%M:%S")))
         load_space_tables(conn)
+    return {"ok": True}
+class SpaceFeeInput(BaseModel):
+    fee_type: str = "free"
+    fee_note: str = ""
+@app.put("/api/team/spaces/{space_id}/fee")
+def team_space_fee(space_id: int, data: SpaceFeeInput, x_team_password: str | None = Header(default=None)):
+    """팀이 매장에 확인한 요금 설명을 적어요. 예: '2인 스터디룸 1시간 8,000원 · 11/20 전화 확인'"""
+    require_team_password(x_team_password)
+    if data.fee_type not in ("free", "paid"):
+        raise HTTPException(400, "무료 또는 유료 중에서 골라 주세요.")
+    note = data.fee_note.strip()
+    if len(note) > 120:
+        raise HTTPException(400, "요금 설명은 120자까지 적을 수 있어요.")
+    if contains_contact(note):
+        raise HTTPException(400, "요금 설명에는 전화번호·이메일을 적을 수 없어요.")
+    with get_db() as conn:
+        team_space_row(conn, space_id)
+        conn.execute("UPDATE candidates SET fee_type=?, fee_note=? WHERE id=?", (data.fee_type, note, space_id))
     return {"ok": True}
 @app.post("/api/team/spaces/geocode")
 def team_space_geocode(x_team_password: str | None = Header(default=None)):
