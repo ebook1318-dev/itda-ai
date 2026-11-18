@@ -6,7 +6,8 @@ import { api } from '../lib/api'
 const EFFECTIVE_DATE = '2026년 11월 18일'
 
 const TRANSFERS = [
-  { to: 'Render', country: '싱가포르', items: '서비스 이용 정보 전반, 접속 기록', purpose: '웹 서버 운영' },
+  { to: '네이버클라우드 (모두의 AI 클라우드)', country: '대한민국', items: '서비스 이용 정보 전반, 접속 기록', purpose: '웹 서버 운영' },
+  { to: 'Render', country: '싱가포르', items: '예비 서버를 이용할 때의 서비스 이용 정보, 접속 기록', purpose: '예비 웹 서버 운영 (본 서버 점검·장애 시)' },
   { to: 'Turso', country: '일본(도쿄)', items: '1조의 회원·이용 정보', purpose: '데이터 저장' },
   { to: 'Brevo', country: '프랑스', items: '이메일 주소, 닉네임, 알림 내용(인증코드·요청 상태 안내, 쪽지 내용은 보내지 않음)', purpose: '이메일 인증과 알림 메일 발송' },
   { to: 'Anthropic (Claude) — 모두의 AI 실험실 게이트웨이 경유', country: '미국', items: '배우고 싶은 내용과 학습 조건, 멘토의 닉네임·주제·소개글·조건 (이메일·비밀번호는 보내지 않음)', purpose: 'AI 추천 판단과 추천 이유 작성' },
@@ -56,7 +57,7 @@ export default function PrivacyPolicy({ onClose }: { onClose: () => void }) {
       </ul>
 
       <h2>5. 처리 위탁 및 국외 이전</h2>
-      <p>서비스 운영을 위해 아래 업체에 개인정보 처리를 맡기며, 이 과정에서 정보가 국외로 이전됩니다.</p>
+      <p>서비스 운영을 위해 아래 업체에 개인정보 처리를 맡깁니다. 웹 서버는 국내(네이버클라우드)에서 운영하며, 데이터 저장·메일 발송·AI 추천 등 일부 업체는 국외에 있어 정보가 국외로 이전됩니다.</p>
       <div className="table-scroll"><table className="privacy-table">
         <thead><tr><th>받는 자</th><th>국가</th><th>이전 항목</th><th>목적</th></tr></thead>
         <tbody>{TRANSFERS.map(row => <tr key={row.to}><td>{row.to}</td><td>{row.country}</td><td>{row.items}</td><td>{row.purpose}</td></tr>)}</tbody>
