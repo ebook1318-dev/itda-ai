@@ -432,3 +432,4 @@ input[type=radio]:focus-visible, input[type=checkbox]:focus-visible { outline: 3
 .hidden-badge { font-size: 12.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #E9E4DA; color: #4A4136; }
 .mrg-review p { margin: 6px 0; }
 .ops-table .text-button { padding: 0; border: 0; background: transparent; text-decoration: underline; font-weight: 700; color: var(--color-primary-strong); cursor: pointer; }
+.nearby-badge { display: inline-block; margin-top: 4px; padding: 2px 9px; border-radius: 999px; background: #E6EEF6; color: #1F4E86; font-size: 12.5px; font-weight: 700; }

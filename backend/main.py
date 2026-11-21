@@ -1659,14 +1659,23 @@ def recommendations(request: RecommendationRequest):
     spaces = [candidate_item(row, request) for row in space_rows]
     # 점수가 같으면 수강생이 고른 동에서 가까운 곳부터. 조건에 맞는 곳이 3곳보다 적으면 가까운 순으로 채웁니다.
     # 무료(공공)와 유료(스터디카페·스터디룸·회의실)는 화면에서 버튼으로 나눠 보여주므로 각각 3곳씩 고릅니다.
-    home = coords_for_neighborhoods(request.neighborhoods)
-    distance = lambda sp: km_between((sp["lat"], sp["lng"]), home) if sp.get("lat") is not None else 999
+    # 여러 동을 골랐으면 그중 가장 가까운 동을 기준으로 거리를 잽니다.
+    homes = [NEIGHBORHOOD_COORDS[n] for n in request.neighborhoods if n in NEIGHBORHOOD_COORDS] or [coords_for_neighborhoods(request.neighborhoods)]
+    distance = lambda sp: min(km_between((sp["lat"], sp["lng"]), h) for h in homes) if sp.get("lat") is not None else 999
     def pick(pool):
         chosen = sorted([s for s in pool if s["score"] >= 2], key=lambda x: (-x["score"], distance(x)))
         if len(chosen) < 3:
             seen = {s["id"] for s in chosen}
             chosen += sorted([s for s in pool if s["id"] not in seen], key=distance)
-        return chosen[:3]
+        chosen = chosen[:3]
+        # 고른 동 밖의 공간은 '옆 동네 · ○○동 · 약 n km'로 알려 줘요.
+        for sp in chosen:
+            dongs = [d.strip() for d in (sp.get("neighborhood") or "").split(",") if d.strip()]
+            if request.neighborhoods and not any(d in request.neighborhoods for d in dongs):
+                km = distance(sp)
+                head = "옆 동네" if km <= 5 else "조금 먼 곳"
+                sp["nearby_label"] = f"{head} · {dongs[0] if dongs else '천안시'}" + (f" · 약 {km:.1f}km" if km < 900 else "")
+        return chosen
     picked = pick([s for s in spaces if s["fee_type"] == "free"])
     picked_paid = pick([s for s in spaces if s["fee_type"] != "free"])
     # 멘토: 규칙으로 도구를 거르고 → AI가 학습 내용과 조건을 보고 순위 결정 (공간 추천 이유도 같은 호출에서 작성)

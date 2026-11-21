@@ -43,12 +43,6 @@ function RecommendReason({ item }: { item: Candidate }) {
   }
   return null
 }
-const FACILITY_NAMES = { indoor: '실내', desk: '책상', wifi: '와이파이', outlet: '콘센트' } as const
-const FACILITY_STATUS = { yes: '있음', no: '없음', unknown: '확인 필요' } as const
-function FacilityChips({ info }: { info?: Candidate['facility_info'] }) {
-  if (!info) return null
-  return <div className="facility-chips">{(Object.keys(FACILITY_NAMES) as (keyof typeof FACILITY_NAMES)[]).map(key => <span key={key} className={`facility-chip ${info[key]}`}>{FACILITY_NAMES[key]} {FACILITY_STATUS[info[key]]}</span>)}</div>
-}
 // 예전 데이터는 '시설' 칸에 '종류 · 주소'가 함께 들어 있어, 주소는 따로 보여주고 종류만 남깁니다.
 function facilityLabel(item: Candidate) {
   const address = item.regions.join(' ').trim()
@@ -65,7 +59,6 @@ function CandidateDetails({ item }: { item: Candidate }) {
     {item.regions.length > 0 && <div><dt>주소</dt><dd>{item.regions.join(' ')}</dd></div>}
     <div><dt>운영시간</dt><dd>{item.operating_hours || '공식 안내에서 확인'}</dd></div>
     <div><dt>이용 절차</dt><dd>{item.usage_procedure || '공식 안내에서 확인'}</dd></div>
-    <div className="facility-row"><dt>편의시설</dt><dd><FacilityChips info={item.facility_info} /></dd></div>
   </dl>
   return <dl className="candidate-details mentor-details">
     {item.intro && <div className="intro-detail"><dt>멘토 소개</dt><dd>{item.intro}</dd></div>}
@@ -103,7 +96,7 @@ export default function RecommendationList({ title, items, selected, onSelect, o
       {items.length === 0 ? <div className="empty"><strong>추천 후보가 아직 없습니다.</strong><p>검색 조건을 조금 바꾸어 다시 찾아보세요.</p></div> : orderedItems.map(item => {
         const chosen = selected?.id === item.id && selected?.kind === item.kind
         return <article className={`candidate ${item.kind} ${chosen ? 'chosen' : ''}`} key={item.id}>
-          <div className="candidate-top">{item.kind === 'space' ? <span className={`space-icon ${item.fee_type === 'paid' ? 'paid' : 'free'}`} aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M3 10l9-6 9 6v10H3z" /><path d="M9 20v-6h6v6" /></svg></span> : <Avatar name={item.name} size={48} />}<div className="candidate-name"><h3>{item.name}{item.kind === 'space' && <> <FeeBadge type={item.fee_type}/></>}</h3>{item.kind === 'mentor' ? <small>{item.tools.join(' · ')} 멘토{item.regions[0] ? ` · ${item.regions[0]}` : ''}</small> : <small>{facilityLabel(item) || '학습 공간'}</small>}</div><MatchBadge item={item}/></div>
+          <div className="candidate-top">{item.kind === 'space' ? <span className={`space-icon ${item.fee_type === 'paid' ? 'paid' : 'free'}`} aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M3 10l9-6 9 6v10H3z" /><path d="M9 20v-6h6v6" /></svg></span> : <Avatar name={item.name} size={48} />}<div className="candidate-name"><h3>{item.name}{item.kind === 'space' && <> <FeeBadge type={item.fee_type}/></>}</h3>{item.kind === 'mentor' ? <small>{item.tools.join(' · ')} 멘토{item.regions[0] ? ` · ${item.regions[0]}` : ''}</small> : <small>{facilityLabel(item) || '학습 공간'}</small>}{item.kind === 'space' && (item as any).nearby_label && <span className="nearby-badge">{(item as any).nearby_label}</span>}</div><MatchBadge item={item}/></div>
           <MetaChips item={item}/>
           <RecommendReason item={item}/>
           <CandidateDetails item={item}/>
