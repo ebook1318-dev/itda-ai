@@ -2,3 +2,37 @@
    선택자는 반드시 :root:root:root 를 쓰세요(템플릿 기본값보다 우선합니다).
    예) :root:root:root { --color-primary: #16A34A; --color-primary-fg: #FFFFFF; }
    디자인 템플릿을 바꾸면 이 파일은 초기화됩니다. */
+/* 배움잇다 AI 디자인 B — 따뜻한 동네 배움터 (주황·초록·크림) 2026-11-22 */
+:root:root:root {
+  color-scheme: light;
+  --font-sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --font-display: "Jua", "Pretendard", "Apple SD Gothic Neo", sans-serif;
+  --heading-weight: 400;
+  --color-bg: #FFF8EE;
+  --color-surface: #FFFFFF;
+  --color-surface-2: #FFF3E6;
+  --color-border: #EADCC8;
+  --color-border-strong: #CDB9A0;
+  --color-text: #2B2118;
+  --color-text-2: #4A3F35;
+  --color-muted: #64574B;
+  --color-primary: #B3461A;
+  --color-primary-fg: #FFFFFF;
+  --color-primary-strong: #9E3D17;
+  --color-primary-weak: #FFEADF;
+  --color-accent: #2F6E54;
+  --color-accent-fg: #FFFFFF;
+  --color-success: #2F6E54;
+  --color-warning: #8A5A00;
+  --color-danger: #B3261E;
+  --color-info: #1F5A80;
+  --focus-ring: #B3461A;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --border-width: 1.5px;
+  --control-h: 50px;
+  --shadow-sm: 0 1px 0 rgba(43,33,24,.04);
+  --shadow-md: 0 8px 20px rgba(43,33,24,.08);
+  --ink-shadow: 0 3px 0 #2B2118;
+}

@@ -1,4 +1,5 @@
 import { Candidate, MatchTier } from '../data'
+import Avatar from './Avatar'
 type Props = {
   title: string
   items: Candidate[]
@@ -12,11 +13,20 @@ type Props = {
 function tierFromPercent(percent: number): MatchTier {
   return percent >= 70 ? 'match' : percent >= 45 ? 'partial' : 'miss'
 }
-function MatchBadge({ percent }: { percent: number | null }) {
-  if (percent === null) return null
-  const tier = tierFromPercent(percent)
-  return <span className={`match-badge tier-${tier}`}>일치도 {percent}%</span>
+// 큰 % 숫자 대신 '조건 몇 개가 맞는지'를 보여줍니다. (규칙 기반 점수라 %는 오해를 줄 수 있어요)
+function MatchBadge({ item }: { item: Candidate }) {
+  const detail = item.match_detail
+  if (detail && 'device' in detail) {
+    const keys = (item.kind === 'space' ? ['device', 'time', 'neighborhood'] : ['tool', 'level', 'device', 'time', 'neighborhood']) as (keyof typeof detail)[]
+    const fields = keys.map(key => detail[key]).filter(Boolean)
+    const ok = fields.filter(field => field!.tier === 'match').length
+    const tier: MatchTier = ok === fields.length ? 'match' : ok >= Math.ceil(fields.length / 2) ? 'partial' : 'miss'
+    return <span className={`match-badge tier-${tier}`}>조건 {ok}/{fields.length} 맞음</span>
+  }
+  if (item.match_percent === null || item.match_percent === undefined) return null
+  return <span className={`match-badge tier-${tierFromPercent(item.match_percent)}`}>일치도 {item.match_percent}%</span>
 }
+const TIER_MARK = { match: '✓', partial: '○', miss: '−', neutral: '·' } as const
 function MetaChips({ item }: { item: Candidate }) {
   const detail = item.match_detail
   if (!detail || !('device' in detail)) return null
@@ -27,13 +37,15 @@ function MetaChips({ item }: { item: Candidate }) {
   return <div className="meta">{rows.map(row => {
     const field = detail[row.key]
     if (!field) return null
-    const tier = row.key === 'keyword' && field.tier === 'miss' ? 'neutral' : field.tier
-    return <span className={`meta-item ${tier}`} key={row.key}><span className="dot"></span>{row.label} · {field.label}</span>
+    // 학습내용이 멘토 주제와 겹치지 않으면, 수강생이 쓴 글을 그대로 되풀이하지 않고 숨깁니다 (AI 추천 이유에서 설명)
+    if (row.key === 'keyword' && field.tier === 'miss') return null
+    const tier = field.tier
+    return <span className={`meta-item ${tier}`} key={row.key}><span className="mark" aria-hidden="true">{TIER_MARK[tier as keyof typeof TIER_MARK]}</span><b>{row.label}</b> {field.label}</span>
   })}</div>
 }
 function RecommendReason({ item }: { item: Candidate }) {
   if (item.ai_reason) {
-    return <p className="reason ai-reason"><span className="ai-badge">✨ AI 추천 이유</span>{item.ai_reason}</p>
+    return <div className="reason ai-reason"><span className="ai-badge">AI 추천 이유</span><p>{item.ai_reason}</p></div>
   }
   if (item.reason) {
     return <p className="reason">{item.reason}</p>
@@ -88,7 +100,7 @@ export default function RecommendationList({ title, items, selected, onSelect, o
   const countLabel = isSpace ? '곳' : '명'
   return <section className={`result-section ${kind}-results`} aria-labelledby={`${title}-heading`}>
     <div className="section-head"><div><p className="eyebrow">우리동네 인근 {isSpace ? (paidList ? '유료 학습 공간' : '무료 학습 공간') : '멘토'} 후보</p><h2 id={`${title}-heading`}>{title}</h2></div><span className="count">{items.length}{countLabel}</span></div>
-    {!isSpace && aiRanked && <p className="list-notice ai-notice">✨ 적어주신 배우고 싶은 내용을 AI가 멘토의 주제·소개글과 비교하고, 시간·동 조건까지 함께 보고 순서를 정했어요.</p>}
+    {!isSpace && aiRanked && <p className="list-notice ai-notice">적어주신 배우고 싶은 내용을 AI가 멘토의 주제·소개글과 비교하고, 시간·동 조건까지 함께 보고 순서를 정했어요.</p>}
     {isSpace && <p className="list-notice">{paidList ? '요금과 운영시간은 매장마다 달라요. 이용 전에 매장에 직접 확인해 주세요.' : '아래 공간은 추천 후보이며, 실제 이용 가능 여부는 공식 페이지에서 다시 확인해주세요.'}</p>}
     <div className="candidate-list">
       {!effectiveDone && (isSpace && onSkip
@@ -98,12 +110,12 @@ export default function RecommendationList({ title, items, selected, onSelect, o
       {items.length === 0 ? <div className="empty"><strong>추천 후보가 아직 없습니다.</strong><p>검색 조건을 조금 바꾸어 다시 찾아보세요.</p></div> : orderedItems.map(item => {
         const chosen = selected?.id === item.id && selected?.kind === item.kind
         return <article className={`candidate ${item.kind} ${chosen ? 'chosen' : ''}`} key={item.id}>
-          <div className="candidate-top"><h3>{item.name}{item.kind === 'space' && <> <FeeBadge type={item.fee_type}/></>}</h3><MatchBadge percent={item.match_percent}/></div>
+          <div className="candidate-top">{item.kind === 'space' ? <span className={`space-icon ${item.fee_type === 'paid' ? 'paid' : 'free'}`} aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M3 10l9-6 9 6v10H3z" /><path d="M9 20v-6h6v6" /></svg></span> : <Avatar name={item.name} size={48} />}<div className="candidate-name"><h3>{item.name}{item.kind === 'space' && <> <FeeBadge type={item.fee_type}/></>}</h3>{item.kind === 'mentor' ? <small>{item.tools.join(' · ')} 멘토{item.regions[0] ? ` · ${item.regions[0]}` : ''}</small> : <small>{facilityLabel(item) || '학습 공간'}</small>}</div><MatchBadge item={item}/></div>
           <MetaChips item={item}/>
           <RecommendReason item={item}/>
           <CandidateDetails item={item}/>
           <div className="source"><span>출처 · {item.source}</span><span>기준일 · {item.source_date}</span></div>
-          <div className="candidate-actions">{item.kind === 'space' && item.official_url && <a className="outline press map-link" href={item.official_url} target="_blank" rel="noreferrer">{item.fee_type === 'paid' ? '지도에서 요금·위치 확인' : '공식 안내 보기'}</a>}<button className={chosen ? 'primary press' : 'outline press'} onClick={() => onSelect(item)}>{chosen ? '선택됨' : `${isSpace ? '공간' : '멘토'} 선택`}</button></div>
+          <div className="candidate-actions">{item.kind === 'space' && item.official_url && <a className="outline press map-link" href={item.official_url} target="_blank" rel="noreferrer">{item.fee_type === 'paid' ? '지도에서 요금·위치 확인' : '공식 안내 보기'}</a>}<button className={chosen ? 'primary press' : 'outline press'} onClick={() => onSelect(item)}>{chosen ? '✓ 선택됨' : `이 ${isSpace ? '공간' : '멘토'} 선택`}</button></div>
         </article>
       })}
     </div>
