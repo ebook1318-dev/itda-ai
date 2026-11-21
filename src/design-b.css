@@ -433,3 +433,8 @@ input[type=radio]:focus-visible, input[type=checkbox]:focus-visible { outline: 3
 .mrg-review p { margin: 6px 0; }
 .ops-table .text-button { padding: 0; border: 0; background: transparent; text-decoration: underline; font-weight: 700; color: var(--color-primary-strong); cursor: pointer; }
 .nearby-badge { display: inline-block; margin-top: 4px; padding: 2px 9px; border-radius: 999px; background: #E6EEF6; color: #1F4E86; font-size: 12.5px; font-weight: 700; }
+/* 동의 체크 상자: 입력칸 높이(54px)가 체크박스에 붙어 생기던 큰 여백 없애기 */
+.auth-card input[type=checkbox], .auth-card input[type=radio], .consent-row input[type=checkbox] { min-height: 0 !important; height: 22px; width: 22px; padding: 0; margin: 2px 0 0; flex: none; border-radius: 4px; }
+.privacy-notice .consent-row, .auth-card .consent-row { display: flex !important; align-items: flex-start; gap: 10px; padding: 12px 14px; margin: 10px 0 6px; min-height: 0; }
+.privacy-notice ul { margin: 8px 0; padding-left: 18px; }
+.privacy-notice .policy-link { display: inline-block; margin-top: 2px; }
