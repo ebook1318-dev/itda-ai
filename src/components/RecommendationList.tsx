@@ -13,18 +13,9 @@ type Props = {
 function tierFromPercent(percent: number): MatchTier {
   return percent >= 70 ? 'match' : percent >= 45 ? 'partial' : 'miss'
 }
-// 큰 % 숫자 대신 '조건 몇 개가 맞는지'를 보여줍니다. (규칙 기반 점수라 %는 오해를 줄 수 있어요)
 function MatchBadge({ item }: { item: Candidate }) {
-  const detail = item.match_detail
-  if (detail && 'device' in detail) {
-    const keys = (item.kind === 'space' ? ['device', 'time', 'neighborhood'] : ['tool', 'level', 'device', 'time', 'neighborhood']) as (keyof typeof detail)[]
-    const fields = keys.map(key => detail[key]).filter(Boolean)
-    const ok = fields.filter(field => field!.tier === 'match').length
-    const tier: MatchTier = ok === fields.length ? 'match' : ok >= Math.ceil(fields.length / 2) ? 'partial' : 'miss'
-    return <span className={`match-badge tier-${tier}`}>조건 {ok}/{fields.length} 맞음</span>
-  }
   if (item.match_percent === null || item.match_percent === undefined) return null
-  return <span className={`match-badge tier-${tierFromPercent(item.match_percent)}`}>일치도 {item.match_percent}%</span>
+  return <span className={`match-badge tier-${tierFromPercent(item.match_percent)}`}>일치도 <b>{item.match_percent}%</b></span>
 }
 const TIER_MARK = { match: '✓', partial: '○', miss: '−', neutral: '·' } as const
 function MetaChips({ item }: { item: Candidate }) {
@@ -48,7 +39,7 @@ function RecommendReason({ item }: { item: Candidate }) {
     return <div className="reason ai-reason"><span className="ai-badge">AI 추천 이유</span><p>{item.ai_reason}</p></div>
   }
   if (item.reason) {
-    return <p className="reason">{item.reason}</p>
+    return <div className="reason rule-reason"><span className="rule-badge">조건 추천 이유</span><p>{item.reason}</p></div>
   }
   return null
 }
@@ -100,7 +91,9 @@ export default function RecommendationList({ title, items, selected, onSelect, o
   const countLabel = isSpace ? '곳' : '명'
   return <section className={`result-section ${kind}-results`} aria-labelledby={`${title}-heading`}>
     <div className="section-head"><div><p className="eyebrow">우리동네 인근 {isSpace ? (paidList ? '유료 학습 공간' : '무료 학습 공간') : '멘토'} 후보</p><h2 id={`${title}-heading`}>{title}</h2></div><span className="count">{items.length}{countLabel}</span></div>
-    {!isSpace && aiRanked && <p className="list-notice ai-notice">적어주신 배우고 싶은 내용을 AI가 멘토의 주제·소개글과 비교하고, 시간·동 조건까지 함께 보고 순서를 정했어요.</p>}
+    {!isSpace && (aiRanked
+      ? <div className="ai-panel"><span className="ai-panel-face" aria-hidden="true">✦</span><div><strong>AI가 멘토 순서를 정했어요</strong><ol><li>적어주신 <b>배우고 싶은 내용</b>을 멘토의 주제·소개글과 비교했어요.</li><li>도구·수준·기기·시간·동이 얼마나 맞는지 함께 봤어요.</li><li>카드마다 <b>AI 추천 이유</b>를 적어 두었어요.</li></ol></div></div>
+      : <div className="ai-panel rule"><span className="ai-panel-face" aria-hidden="true">⚙</span><div><strong>조건으로 고른 추천이에요</strong><p>AI 연결이 늦어져서, 도구·수준·기기·시간·동이 맞는 정도로 먼저 골랐어요. 잠시 뒤 ‘조건 수정하기’로 다시 찾으면 AI 추천을 받을 수 있어요.</p></div></div>)}
     {isSpace && <p className="list-notice">{paidList ? '요금과 운영시간은 매장마다 달라요. 이용 전에 매장에 직접 확인해 주세요.' : '아래 공간은 추천 후보이며, 실제 이용 가능 여부는 공식 페이지에서 다시 확인해주세요.'}</p>}
     <div className="candidate-list">
       {!effectiveDone && (isSpace && onSkip

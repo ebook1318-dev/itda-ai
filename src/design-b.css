@@ -360,3 +360,44 @@ span.avatar, .history-item span.avatar { display: inline-grid; place-items: cent
 .choice.purpose-card { min-height: 64px; }
 .tool-family-note { display: block; margin-top: 8px; padding-top: 8px; border-top: 1.5px dashed #F4C8B2; color: #6A2A0F; font-size: 14.5px; line-height: 1.5; }
 .tool-recommendation .choice.has-hint { min-width: 0; }
+
+/* ===== 2026-11-22 2차 다듬기 ===== */
+/* 라디오·체크박스에는 입력칸용 바깥 테두리가 붙지 않게 */
+.auth-card input[type=radio]:focus, .auth-card input[type=checkbox]:focus, input[type=radio]:focus, input[type=checkbox]:focus { outline: none; border: 0; }
+input[type=radio]:focus-visible, input[type=checkbox]:focus-visible { outline: 3px solid #FFD2BC; outline-offset: 2px; border-radius: 50%; }
+
+/* 선택 단추 묶음: 줄마다 오른쪽 빈칸 없이 꽉 채우기 */
+.choices, .checkbox-grid, .role-group, .example-chips .chip-row, .status-selector > div, .request-response-actions, .team-actions, .verify-actions { display: flex !important; flex-wrap: wrap; gap: 8px; }
+.choices > button, .checkbox-grid > label, .role-group > label { flex: 1 1 104px; justify-content: center; text-align: center; }
+.choice.has-hint { flex-basis: 128px; text-align: left; justify-content: start; }
+.tool-recommendation .choices > button { flex-basis: 116px; }
+.role-group > label { flex-basis: 120px; justify-content: center; }
+.checkbox-grid > label.check-option { justify-content: flex-start; text-align: left; }
+.neighborhood-section .checkbox-grid > label { flex: 1 1 92px; }
+.team-actions > button, .request-response-actions > button, .verify-actions > button { flex: 1 1 160px; }
+.team-ai .team-actions .outline, .team-ai .team-actions .primary { min-height: 52px; }
+.example-chips .example-chip { flex: 1 1 auto; }
+
+/* 학습 취소: 제대로 된 단추로 */
+.cancel-open { width: 100%; border-color: #B3261E !important; color: #B3261E !important; background: #FFFFFF; }
+.cancel-open:hover { background: #FDF0EB; }
+.cancel-box { margin-top: 8px; padding: 14px; border-radius: 16px; border: 1.5px solid #EDBBA9; background: #FDF0EB; display: grid; gap: 8px; }
+.cancel-box .danger-fill { background: #B3261E; }
+
+/* 일치도 % */
+.match-badge b { font-size: 16px; margin-left: 2px; }
+
+/* AI가 순서를 정했는지 크게 알려 주는 판 */
+.ai-panel { display: flex; gap: 12px; align-items: flex-start; margin-top: 12px; padding: 14px 16px; border-radius: 18px; background: var(--color-primary-weak); border: 2px solid var(--color-primary); }
+.ai-panel-face { flex: none; width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; background: var(--color-primary); color: #FFD766; font-size: 20px; }
+.ai-panel strong { font: 400 20px var(--font-display); color: var(--color-text); }
+.ai-panel ol { margin: 6px 0 0; padding-left: 20px; color: #4A2412; font-size: 15px; display: grid; gap: 2px; }
+.ai-panel p { margin: 4px 0 0; color: var(--color-text-2); font-size: 15px; }
+.ai-panel.rule { background: #F2ECE2; border-color: var(--color-border-strong); }
+.ai-panel.rule .ai-panel-face { background: var(--color-text-2); color: #FFFFFF; }
+.reason.rule-reason { background: #F7F2EA; border: 1.5px solid var(--color-border); border-radius: 4px 16px 16px 16px; margin-top: 14px; }
+.reason.rule-reason p { margin: 6px 0 0; font-size: 15px; }
+.rule-badge { display: inline-flex; padding: 3px 10px; border-radius: 999px; background: var(--color-text-2); color: #FFFFFF; font-size: 12.5px; font-weight: 700; }
+
+/* 도구 추천 이유 한 줄 */
+.tool-why { display: block; margin-top: 6px; color: var(--color-text-2); font-size: 15px; }

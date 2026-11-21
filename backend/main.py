@@ -163,40 +163,31 @@ EXTRA_SPACES = [
     ("천안중앙도서관 러닝커먼스", "원성동", "충청남도 천안시 동남구 중앙로 118", "공공도서관 1층 학습 공유 공간",
      ALL_WEEK, "매일 08:00~22:00 (매월 둘째·넷째 월요일·공휴일 휴관)", "예약 없이 이용하는 열린 학습 공간 · 이용 전 도서관 공식 안내 확인",
      "free", "무료", "https://www.cheonan.go.kr/lib.do"),
-    ("디오스퀘어", "두정동", "충청남도 천안시 서북구 두정동", "카페 · 모임용 룸",
-     "평일 오후,평일 저녁,주말 오후", "매일 12:00~23:30 (지도 정보 기준)", "모임용 룸 이용 가능 여부는 매장에 직접 확인",
-     "paid", FEE_CAFE, naver_map_url("천안 두정동 디오스퀘어")),
-    ("비브레이브 천안점", "백석동", "충청남도 천안시 서북구 한들3로 36-16", "베이커리 카페 (2층)",
-     ALL_WEEK, "매일 09:00~22:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
-     "paid", FEE_CAFE, naver_map_url("비브레이브 천안점")),
+    # 유료 공간은 '스터디카페·스터디센터·회의실'처럼 공부하는 곳이면서, 스터디룸·회의실이 있어 대화하며 배울 수 있는 곳만 넣어요.
+    # 일반 카페는 넣지 않아요. (요금·운영시간은 바뀔 수 있어 매장에서 직접 확인)
     ("네이처스터디카페 천안불당점", "불당동", "충청남도 천안시 서북구 검은들3길 42", "스터디카페 · 스터디룸(대화 가능)",
      ALL_WEEK, "24시간 (지도 정보 기준)", "스터디룸 예약 후 이용 (TV 모니터 연결 가능)",
      "paid", FEE_ROOM, naver_map_url("네이처스터디카페 천안불당점")),
-    ("카페 마젠타", "성성동", "충청남도 천안시 서북구 성성2길 81", "카페",
-     ALL_WEEK, "매일 09:00~21:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
-     "paid", FEE_CAFE, naver_map_url("천안 카페 마젠타")),
-    ("카페 코발트", "성환읍", "충청남도 천안시 서북구 성환읍 연암율금로 512-10", "카페 · 단체석 있음",
-     ALL_WEEK, "매일 10:00~22:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
-     "paid", FEE_CAFE, naver_map_url("성환 카페 코발트")),
-    ("인트로", "입장면", "충청남도 천안시 서북구 입장면 기로리 86-33", "카페 (2층)",
-     ALL_WEEK, "매일 10:00~21:30 (지도 정보 기준)", "음료 주문 후 자리 이용",
-     "paid", FEE_CAFE, naver_map_url("천안 입장면 카페 인트로")),
-    ("이디야커피 천안직산점", "직산읍", "충청남도 천안시 서북구 직산읍 삼은리 311", "카페 (2층, 와이파이·콘센트)",
-     ALL_WEEK, "매일 10:00~22:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
-     "paid", FEE_CAFE, naver_map_url("이디야커피 천안직산점")),
+    ("디플레이스 스터디카페 천안신불당점", "불당동", "충청남도 천안시 서북구 불당동 (신불당)", "스터디카페 · 그룹스터디룸",
+     ALL_WEEK, "연중무휴 24시간 (매장 소개 기준)", "그룹스터디룸 시간 단위 이용 · 예약은 매장 안내에 따라",
+     "paid", FEE_ROOM, naver_map_url("디플레이스 스터디카페 천안신불당점")),
+    ("토즈스터디센터 천안불당센터", "불당동", "충청남도 천안시 서북구 불당동 730 4층", "스터디센터 · 그룹스터디룸",
+     ALL_WEEK, "평일·토 09:00~02:00, 일 09:00~01:00 (월 1회 휴무, 지도 정보 기준)", "그룹스터디룸 예약 후 이용",
+     "paid", FEE_ROOM, naver_map_url("토즈스터디센터 천안불당센터")),
+    ("천안 불당 흥비즈센터", "불당동", "충청남도 천안시 서북구 불당동 (불당공원 근처)", "스터디룸·회의실 대관 (단독 룸)",
+     ALL_WEEK, "0~24시 (예약 사이트 기준)", "예약 사이트에서 시간 단위 예약 (최소 3시간) · 보증금 등 조건은 예약 화면 확인",
+     "paid", FEE_ROOM, naver_map_url("천안 불당 흥비즈센터")),
+    ("티스트(TYST) 스터디카페", "두정동", "충청남도 천안시 서북구 두정동 1292 3층", "스터디카페 · 그룹룸·회의실",
+     ALL_WEEK, "24시간 (지도 정보 기준)", "그룹룸·회의실 이용 가능 여부와 예약 방법은 매장에 확인",
+     "paid", FEE_ROOM, naver_map_url("천안 두정동 티스트 스터디카페")),
+    ("가장스터디카페", "두정동", "충청남도 천안시 서북구 두정동 975-1", "스터디카페 · 스터디룸",
+     ALL_WEEK, "24시간 (지도 정보 기준)", "스터디룸 예약 후 이용",
+     "paid", FEE_ROOM, naver_map_url("천안 두정동 가장스터디카페")),
     ("로그인 스터디카페", "신방동", "충청남도 천안시 동남구 통정11로 57", "스터디카페 · 스터디룸(대화 가능)",
      ALL_WEEK, "24시간 (지도 정보 기준)", "스터디룸 예약 후 이용",
      "paid", FEE_ROOM, naver_map_url("천안 신방동 로그인 스터디카페")),
-    ("카페 삼룡동", "삼룡동", "충청남도 천안시 동남구 삼룡동 322-1", "브런치 카페",
-     ALL_WEEK, "매일 09:30~22:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
-     "paid", FEE_CAFE, naver_map_url("천안 카페 삼룡동")),
-    ("프리퍼팩토리", "목천읍", "충청남도 천안시 동남구 목천읍 종합휴양지로 77", "카페 (2층)",
-     "평일 오전,평일 오후,주말 오전,주말 오후", "매일 09:00~19:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
-     "paid", FEE_CAFE, naver_map_url("천안 목천 프리퍼팩토리")),
-    ("화진담", "광덕면", "충청남도 천안시 동남구 광덕면 보산원2길 30-4", "카페",
-     "평일 오후,주말 오후", "매일 11:00~20:00 (지도 정보 기준)", "음료 주문 후 자리 이용",
-     "paid", FEE_CAFE, naver_map_url("천안 광덕면 화진담")),
 ]
+RETIRED_EXTRA_SPACES = ("디오스퀘어", "비브레이브 천안점", "카페 마젠타", "카페 코발트", "인트로", "이디야커피 천안직산점", "카페 삼룡동", "프리퍼팩토리", "화진담")
 def restore_extra_spaces(conn):
     """추가 공간을 넣거나 기본 정보를 맞춥니다. 요금 설명(fee_note)은 팀이 고쳤을 수 있어 새로 넣을 때만 채워요."""
     existing = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM candidates WHERE kind='space' AND mentor_user_id IS NULL").fetchall()}
@@ -212,6 +203,10 @@ def restore_extra_spaces(conn):
         else:
             statements.append(("""INSERT INTO candidates (kind,name,tools,levels,devices,regions,times,official_url,source,source_date,description,distance,neighborhood,consent_confirmed,verification_status,facility,operating_hours,usage_procedure,fee_type,fee_note) VALUES ('space',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                (name, *common, fee_type, fee_note)))
+    # 예전에 넣었던 일반 카페는 추천에서 뺍니다. (지난 요청 기록이 남도록 지우지 않고 종류만 바꿔요)
+    for name in RETIRED_EXTRA_SPACES:
+        if name in existing:
+            statements.append(("UPDATE candidates SET kind='retired_space' WHERE id=?", (existing[name],)))
     run_batch(conn, statements)
 def restore_default_candidates(conn):
     """Keep existing records and refresh only verified public-space records."""
@@ -591,7 +586,7 @@ def init_db():
         add_column(conn, "candidates", "facility", "TEXT DEFAULT ''")
         add_column(conn, "candidates", "operating_hours", "TEXT DEFAULT ''")
         add_column(conn, "candidates", "usage_procedure", "TEXT DEFAULT ''")
-        # 공간 요금: free(무료 공공공간) · paid(카페·스터디룸 등 유료). 요금 설명은 팀이 확인하면 팀 화면에서 고쳐요.
+        # 공간 요금: free(무료 공공공간) · paid(스터디카페·스터디룸·회의실 등 유료). 요금 설명은 팀이 확인하면 팀 화면에서 고쳐요.
         add_column(conn, "candidates", "fee_type", "TEXT DEFAULT 'free'")
         add_column(conn, "candidates", "fee_note", "TEXT DEFAULT ''")
         # 유료 공간으로 요청할 때 '이용료는 두 분이 협의' 안내에 동의한 기록
@@ -1663,7 +1658,7 @@ def recommendations(request: RecommendationRequest):
     # 공간: 기기·시간·동 점수로 상위 3곳 (공간은 '무엇을 배우나'보다 '어디서 할 수 있나'라서 규칙으로 고름)
     spaces = [candidate_item(row, request) for row in space_rows]
     # 점수가 같으면 수강생이 고른 동에서 가까운 곳부터. 조건에 맞는 곳이 3곳보다 적으면 가까운 순으로 채웁니다.
-    # 무료(공공)와 유료(카페·스터디룸)는 화면에서 버튼으로 나눠 보여주므로 각각 3곳씩 고릅니다.
+    # 무료(공공)와 유료(스터디카페·스터디룸·회의실)는 화면에서 버튼으로 나눠 보여주므로 각각 3곳씩 고릅니다.
     home = coords_for_neighborhoods(request.neighborhoods)
     distance = lambda sp: km_between((sp["lat"], sp["lng"]), home) if sp.get("lat") is not None else 999
     def pick(pool):
