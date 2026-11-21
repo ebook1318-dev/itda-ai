@@ -948,6 +948,8 @@ def contains_contact(text: str):
     has_phone = bool(re.search(r"(?:0\d{1,2}[\s-]?)?\d{3,4}[\s-]?\d{4}", text))
     has_email = bool(re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text))
     return has_phone or has_email
+# 물어보면 답해 주는 AI(대화형 AI)는 쓰는 방법이 거의 같아서, 서로 다른 도구여도 "비슷함"으로 봅니다.
+CHAT_AI_TOOLS = ("ChatGPT", "Gemini", "Claude")
 ANY_TOOL = "상관없어요"  # 학습자가 특정 도구 없이 "멘토 추천대로/아무거나 괜찮음"을 선택했을 때의 값
 LEVEL_ORDER = ["입문", "초급", "중급"]
 MAX_SCORE = 15
@@ -997,9 +999,13 @@ def candidate_item(row, request=None):
                 score += 4; matches.append("도구는 상관없음 · 멘토 추천대로 가능")
                 match_detail["tool"] = {"tier": "match", "label": ANY_TOOL}
             else:
-                tool_tier = "match" if request.tool in item["tools"] else "miss"
+                family = [t for t in item["tools"] if t in CHAT_AI_TOOLS] if request.tool in CHAT_AI_TOOLS else []
+                tool_tier = "match" if request.tool in item["tools"] else ("partial" if family else "miss")
                 if tool_tier == "match": score += 4; matches.append(f"{request.tool} 학습 가능")
-                match_detail["tool"] = {"tier": tool_tier, "label": request.tool if tool_tier == "match" else (", ".join(item["tools"]) or "정보 없음")}
+                elif tool_tier == "partial":
+                    score += 3; matches.append(f"{'·'.join(family)}로 배워요 ({request.tool}와 쓰는 방법이 거의 같아요)")
+                label = request.tool if tool_tier == "match" else (f"{'·'.join(family)} · 쓰는 방법 같아요" if tool_tier == "partial" else (", ".join(item["tools"]) or "정보 없음"))
+                match_detail["tool"] = {"tier": tool_tier, "label": label}
 
             lvl_tier, lvl_distance = level_tier(request.level, item["levels"])
             if lvl_tier == "match": score += 3; matches.append(f"{request.level} 수준에 맞음")
@@ -1168,11 +1174,16 @@ def build_matching_prompt(request, mentors, spaces):
 - 추천 이유는 수강생에게 말하듯 친근한 한국어 한 문장으로, 내용이 맞는 점과 (있다면) 시간·동이 맞는 점을 함께 쓰세요.
 - 수강생이 고르지 않은 조건(사용 기기·가능 시간·가능한 동이 빈 목록)은 '맞는다', '만나기 좋다'고 쓰지 마세요.
   멘토 정보로만 알려줄 때는 "이 멘토님은 평일 저녁에 활동해요"처럼 멘토의 정보라는 것이 드러나게 쓰세요.
+- 수강생이 고른 도구와 멘토의 도구가 다르지만 둘 다 ChatGPT·Gemini·Claude 중 하나라면, 추천 이유에
+  "Gemini와 ChatGPT는 쓰는 방법이 거의 같아서 이 멘토님께 함께 배울 수 있어요"처럼 쉬운 말로 꼭 알려 주세요.
 - 유료 공간의 추천 이유에는 금액을 지어내지 말고, 요금은 매장에서 확인해야 한다는 점을 흐리지 마세요.
 - 수강생은 '수강생님' 또는 '~하시는 분'으로 부르고, '나', '저', '제가' 같은 1인칭은 쓰지 마세요."""
 
 def same_tool(item, request):
-    return request.tool == ANY_TOOL or request.tool in item["tools"]
+    if request.tool == ANY_TOOL or request.tool in item["tools"]:
+        return True
+    # ChatGPT·Gemini·Claude끼리는 쓰는 방법이 같아 함께 추천합니다 (점수는 같은 도구보다 1점 낮음)
+    return request.tool in CHAT_AI_TOOLS and any(t in CHAT_AI_TOOLS for t in item["tools"])
 
 def rank_mentors(mentor_items, request, use_ai=True, spaces=None):
     """멘토 순위를 정합니다. 반환: (정렬된 멘토 목록, AI 사용 여부, 실패 사유)
