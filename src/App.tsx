@@ -444,7 +444,7 @@ function ContactForm({ onClose }: { user?: User | null; onClose: () => void }) {
     <div className="actions end"><button className="primary press" onClick={onClose}>돌아가기</button></div>
   </section>
 }
-function Stars({ value }: { value: number }) { return <span className="stars" aria-label={`별점 ${value}점`}>{'★'.repeat(value)}<span className="stars-off">{'★'.repeat(5 - value)}</span></span> }
+function Stars({ value }: { value: number }) { const v = Math.max(0, Math.min(5, Math.round(Number(value) || 0))); return <span className="stars" aria-label={`별점 ${v}점`}><span className="stars-on">{'★'.repeat(v)}</span><span className="stars-off">{'★'.repeat(5 - v)}</span></span> }
 function ReviewForm({ request, onSubmit, onLater }: { request: LearningRequest; onSubmit: (rating: number, revisit: boolean, content: string, tags: string[]) => Promise<void>; onLater: () => void }) {
   const [rating, setRating] = useState(0)
   const [revisit, setRevisit] = useState<boolean | null>(null)
@@ -468,14 +468,59 @@ function MentorReviews({ reviews, completed }: { reviews: Review[]; completed: n
   return <section className="result-section"><h2>받은 이용 후기</h2><div className="review-summary"><span><b>{avg ? `★ ${avg}` : '-'}</b>평균 만족도</span><span><b>{reviews.length}개</b>받은 후기</span><span><b>{completed}번</b>마친 학습</span></div><TagCounts items={tagCounts} />
     {reviews.length ? reviews.map(review => <article className="review" key={review.id}><div className="review-head">{review.rating ? <Stars value={review.rating} /> : null}<strong>{review.learner_name}</strong>{review.revisit === 1 && <span className="badge">다시 배우고 싶어요</span>}<small>{localDate(review.created_at)}</small></div>{review.content && <p>{review.content}</p>}{review.tags?.length ? <div className="chips">{review.tags.map(tag => <span key={tag}>{tag}</span>)}</div> : null}</article>) : <p className="empty">아직 받은 이용 후기가 없습니다. 수강생이 학습을 마치면 후기를 남길 수 있어요.</p>}</section>
 }
+// 운영팀 후기: 멘토별로 묶고, 누르면 그 멘토의 후기만 펼쳐요. 살펴볼 멘토(⚠)를 먼저 보여줘요.
+function MentorReviewGroups({ mentors, reviews, openName, setOpenName, onToggleHidden }: { mentors: any[]; reviews: any[]; openName: string; setOpenName: (name: string) => void; onToggleHidden: (review: any) => void }) {
+  const [filter, setFilter] = useState<'all' | 'warn' | 'hidden'>('all')
+  const names = Array.from(new Set([...mentors.map(m => m.name), ...reviews.map(r => r.mentor_name || '삭제된 멘토')]))
+  const groups = names.map(name => {
+    const list = reviews.filter(r => (r.mentor_name || '삭제된 멘토') === name)
+    const visible = list.filter(r => !r.hidden)
+    const rated = visible.filter(r => r.rating)
+    const avg = rated.length ? rated.reduce((a, r) => a + Number(r.rating), 0) / rated.length : null
+    const revisit = visible.length ? Math.round(100 * visible.filter(r => r.revisit === 1).length / visible.length) : null
+    const tagCount: Record<string, number> = {}
+    visible.forEach(r => (r.tags || []).forEach((t: string) => { tagCount[t] = (tagCount[t] || 0) + 1 }))
+    const topTags = Object.entries(tagCount).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([t]) => t)
+    const warn = visible.length > 0 && ((avg !== null && avg <= 3) || (revisit !== null && revisit < 50) || visible.some(r => Number(r.rating) <= 2))
+    return { name, list, visible, avg, revisit, topTags, warn, hiddenCount: list.length - visible.length }
+  }).sort((a, b) => (Number(b.warn) - Number(a.warn)) || (b.list.length - a.list.length) || a.name.localeCompare(b.name))
+  const shown = groups.filter(g => filter === 'all' ? true : filter === 'warn' ? g.warn : g.hiddenCount > 0)
+  const warnCount = groups.filter(g => g.warn).length, hiddenTotal = reviews.filter(r => r.hidden).length
+  return <section className="mentor-review-groups">
+    <div className="mrg-head"><h3>멘토별 후기 <small>전체 {reviews.length}개</small></h3>
+      <div className="mrg-filter" role="group" aria-label="후기 거르기">{([['all', '전체'], ['warn', `⚠ 살펴볼 멘토 ${warnCount}`], ['hidden', `숨긴 후기 ${hiddenTotal}`]] as const).map(([key, label]) => <button key={key} type="button" aria-pressed={filter === key} className={`choice press ${filter === key ? 'selected' : ''}`} onClick={() => setFilter(key)}>{label}</button>)}</div>
+    </div>
+    {!shown.length && <p className="empty">{filter === 'warn' ? '살펴볼 멘토가 없어요. 평균 별점 3점 이하, 재이용 의향 50% 미만, 2점 이하 후기가 있으면 여기에 나와요.' : filter === 'hidden' ? '숨긴 후기가 없어요.' : '아직 후기가 없어요.'}</p>}
+    {shown.map(g => {
+      const open = openName === g.name
+      const items = filter === 'hidden' ? g.list.filter(r => r.hidden) : g.list
+      return <article key={g.name} id={`mr-${g.name}`} className={`mrg-item ${g.warn ? 'warn' : ''} ${g.list.length ? '' : 'empty-mentor'} ${open ? 'open' : ''}`}>
+        <button type="button" className="mrg-row" aria-expanded={open} disabled={!g.list.length} onClick={() => setOpenName(open ? '' : g.name)}>
+          <Avatar name={g.name} size={42} />
+          <span className="mrg-main"><strong>{g.name}{g.warn && <span className="warn-badge">⚠ 살펴보기</span>}</strong>
+            {g.list.length ? <span className="mrg-stats"><b>{g.avg !== null ? `★ ${g.avg.toFixed(1)}` : '별점 없음'}</b> · 후기 {g.visible.length}{g.hiddenCount ? ` (숨김 ${g.hiddenCount})` : ''} · 재이용 {g.revisit ?? '-'}{g.revisit !== null ? '%' : ''}</span> : <span className="mrg-stats">아직 후기 없음</span>}
+            {g.topTags.length > 0 && <span className="mrg-tags">많이 받은 칭찬 · {g.topTags.join(' · ')}</span>}</span>
+          {g.list.length > 0 && <span className="mrg-arrow" aria-hidden="true">{open ? '▾' : '▸'}</span>}
+        </button>
+        {open && <div className="mrg-reviews">{items.map(review => <div key={review.id} className={`mrg-review ${review.hidden ? 'is-hidden' : ''}`}>
+          <div className="mrg-review-head">{review.rating ? <><Stars value={review.rating} /><b className="mrg-score">{Number(review.rating).toFixed(1)}</b></> : null}{review.revisit === 1 && <span className="badge">재이용 의향</span>}<small>{localDate(review.created_at)}</small>{review.hidden ? <span className="hidden-badge">숨김</span> : null}<button type="button" className="text-button mrg-hide" onClick={() => onToggleHidden(review)}>{review.hidden ? '다시 보이기' : '숨기기'}</button></div>
+          {review.content && <p>{review.content}</p>}
+          {review.tags?.length ? <div className="chips">{review.tags.map((tag: string) => <span key={tag}>{tag}</span>)}</div> : null}
+        </div>)}</div>}
+      </article>
+    })}
+  </section>
+}
 function TeamOperations({ headers }: { headers: () => Record<string, string> }) {
   const [data, setData] = useState<any>(null)
+  const [openName, setOpenName] = useState('')
   const [message, setMessage] = useState('')
   const load = async () => { try { const response = await api('team/operations', { headers: headers() }); const body = await response.json(); if (!response.ok) throw new Error(body.detail); setData(body); setMessage('') } catch (error) { setMessage(error instanceof Error ? error.message : '불러오지 못했습니다.') } }
   useEffect(() => { load() }, [])
   const toggleHidden = async (review: any) => { try { const response = await api(`team/reviews/${review.id}/hidden`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ hidden: !review.hidden }) }); const body = await response.json(); if (!response.ok) throw new Error(body.detail); await load() } catch (error) { setMessage(error instanceof Error ? error.message : '바꾸지 못했습니다.') } }
   if (!data) return <section className="team-ai"><h2>운영 현황</h2><p className="help">{message || '불러오는 중…'}</p>{message && <div className="team-actions"><button className="outline press" onClick={load}>다시 불러오기</button></div>}</section>
   const s = data.summary
+  const openMentorReviews = (name: string) => { setOpenName(name); setTimeout(() => document.getElementById(`mr-${name}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }
   const pct = (a: number, b: number) => b ? ` (${Math.round(100 * a / b)}%)` : ''
   return <section className="team-ai"><h2>운영 현황</h2><div className="team-actions"><button className="outline press" onClick={load}>새로고침</button></div>{message && <p className="form-message">{message}</p>}
     <div className="ops-grid">
@@ -487,9 +532,8 @@ function TeamOperations({ headers }: { headers: () => Record<string, string> }) 
     <TagCounts items={s.tags || []} />
     <p className="ops-funnel"><span>요청 <b>{s.requests}</b></span>›<span>수락 <b>{s.accepted}</b>{pct(s.accepted, s.requests)}</span>›<span>실제 만남(완료) <b>{s.completed}</b>{pct(s.completed, s.requests)} · 양쪽 확인 <b>{s.both_confirmed}</b></span>›<span>후기 <b>{s.reviews}</b>{pct(s.reviews, s.completed)}</span></p>
     <p className="ops-funnel"><span>요청 결과 ·</span><span>대기 <b>{s.pending}</b></span><span>거절 <b>{s.rejected}</b></span><span>응답 없음 <b>{s.expired}</b></span><span>요청 취소 <b>{s.learner_cancelled}</b></span><span>수락 후 취소 <b>{s.cancelled_after_accept}</b></span></p>
-    <div className="table-scroll"><table className="ops-table"><thead><tr><th>멘토</th><th>요청</th><th>수락</th><th>완료</th><th>양쪽 확인</th><th>후기</th><th>평균 별점</th><th>재이용</th></tr></thead><tbody>{data.mentors.map((m: any) => <tr key={m.name}><td>{m.name}{m.verified ? '' : <small> (확인 전)</small>}</td><td>{m.requests}</td><td>{m.accepted}</td><td>{m.completed}</td><td>{m.both_confirmed}</td><td>{m.reviews}</td><td>{m.avg_rating ? `★ ${Number(m.avg_rating).toFixed(1)}` : '-'}</td><td>{m.revisit_percent != null ? `${m.revisit_percent}%` : '-'}</td></tr>)}</tbody></table></div>
-    <h3>전체 후기 ({data.reviews.length})</h3>
-    {data.reviews.length ? data.reviews.map((review: any) => <article key={review.id} className={`review ${review.hidden ? 'is-hidden' : ''}`}><div className="review-head">{review.rating ? <Stars value={review.rating} /> : null}<strong>{review.mentor_name || '삭제된 멘토'}</strong>{review.revisit === 1 && <span className="badge">재이용 의향</span>}<small>{localDate(review.created_at)}{review.hidden ? ' · 숨김' : ''}</small><button className="outline press review-hide" onClick={() => toggleHidden(review)}>{review.hidden ? '다시 보이기' : '숨기기'}</button></div>{review.content && <p>{review.content}</p>}{review.tags?.length ? <div className="chips">{review.tags.map((tag: string) => <span key={tag}>{tag}</span>)}</div> : null}</article>) : <p className="empty">아직 후기가 없어요.</p>}
+    <div className="table-scroll"><table className="ops-table"><thead><tr><th>멘토</th><th>요청</th><th>수락</th><th>완료</th><th>양쪽 확인</th><th>후기</th><th>평균 별점</th><th>재이용</th></tr></thead><tbody>{data.mentors.map((m: any) => <tr key={m.name}><td>{m.reviews ? <button type="button" className="text-button" onClick={() => openMentorReviews(m.name)}>{m.name}</button> : m.name}{m.verified ? '' : <small> (확인 전)</small>}</td><td>{m.requests}</td><td>{m.accepted}</td><td>{m.completed}</td><td>{m.both_confirmed}</td><td>{m.reviews}</td><td>{m.avg_rating ? `★ ${Number(m.avg_rating).toFixed(1)}` : '-'}</td><td>{m.revisit_percent != null ? `${m.revisit_percent}%` : '-'}</td></tr>)}</tbody></table></div>
+    <MentorReviewGroups mentors={data.mentors} reviews={data.reviews} openName={openName} setOpenName={setOpenName} onToggleHidden={toggleHidden} />
   </section>
 }
 const TAB_ICON_PATHS: Record<string, JSX.Element> = { search: <><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></>, history: <><rect x="4" y="4" width="16" height="17" rx="3" /><path d="M8 9h8M8 13h8M8 17h5" /></>, mail: <><rect x="3" y="5" width="18" height="14" rx="3" /><path d="M4 7l8 6 8-6" /></>, star: <path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.8z" />, user: <><circle cx="12" cy="8" r="4" /><path d="M4 21c1-4 4.5-6 8-6s7 2 8 6" /></> }

@@ -401,3 +401,34 @@ input[type=radio]:focus-visible, input[type=checkbox]:focus-visible { outline: 3
 
 /* 도구 추천 이유 한 줄 */
 .tool-why { display: block; margin-top: 6px; color: var(--color-text-2); font-size: 15px; }
+
+/* ===== 운영팀 · 멘토별 후기 ===== */
+.stars .stars-on { color: #E0A100; } .stars .stars-off { color: #D9CBB8; }
+.mentor-review-groups { margin-top: 20px; display: grid; gap: 10px; }
+.mrg-head { display: grid; gap: 8px; }
+.mrg-head h3 { font: 400 22px var(--font-display); margin: 0; }
+.mrg-head h3 small { font: 700 14px var(--font-sans); color: var(--color-muted); margin-left: 6px; }
+.mrg-item { border: 1.5px solid var(--color-border); border-radius: 18px; background: #FFFFFF; overflow: hidden; scroll-margin-top: 80px; }
+.mrg-item.warn { border-color: #E9C66B; border-left: 6px solid #E0A100; }
+.mrg-item.open { border-color: var(--color-text); }
+.mrg-item.empty-mentor { opacity: .6; }
+.mrg-row { width: 100%; display: flex; align-items: center; gap: 12px; padding: 14px 16px; border: 0; background: transparent; text-align: left; color: var(--color-text); }
+.mrg-row:disabled { cursor: default; }
+.mrg-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.mrg-main strong { font: 400 19px var(--font-display); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mrg-stats { color: var(--color-text-2); font-size: 15px; }
+.mrg-stats b { color: #9A6B00; }
+.mrg-tags { color: var(--color-muted); font-size: 13.5px; }
+.mrg-arrow { font-size: 18px; color: var(--color-muted); }
+.warn-badge { font: 700 12.5px var(--font-sans); padding: 2px 9px; border-radius: 999px; background: #FFF3D1; color: #6B4600; }
+.mrg-reviews { border-top: 1.5px dashed var(--color-border); padding: 4px 16px 12px; background: #FFFCF7; }
+.mrg-review { padding: 12px 0; border-bottom: 1px solid var(--color-border); }
+.mrg-review:last-child { border-bottom: 0; }
+.mrg-review.is-hidden { opacity: .55; }
+.mrg-review-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mrg-score { font-size: 14px; color: #9A6B00; }
+.mrg-review-head small { color: var(--color-muted); }
+.mrg-hide { margin-left: auto; min-height: 36px; padding: 0 6px; background: transparent; border: 0; font-size: 14px; text-decoration: underline; color: var(--color-muted) !important; }
+.hidden-badge { font-size: 12.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #E9E4DA; color: #4A4136; }
+.mrg-review p { margin: 6px 0; }
+.ops-table .text-button { padding: 0; border: 0; background: transparent; text-decoration: underline; font-weight: 700; color: var(--color-primary-strong); cursor: pointer; }
