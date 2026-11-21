@@ -332,3 +332,27 @@ span.avatar, .history-item span.avatar { display: inline-grid; place-items: cent
   .auth-page { padding-top: 32px; }
   .hero.hero-town { margin-top: 24px; }
 }
+/* 찾기 화면 그림 줄이기: 1단계에만, 얇은 띠로. 아래 선택란이 첫 화면에 보이도록 */
+.hero.hero-town { grid-template-columns: 1fr; margin: 12px 0 14px; border-radius: 22px; }
+.hero-town .hero-copy { padding: 16px 18px 0; }
+.hero-town .eyebrow { margin-bottom: 4px; }
+.hero-town h1 { font-size: 24px; line-height: 1.25; }
+.hero-town h1 br { display: none; }
+.hero-town .hero-copy > p:last-child { display: none; }
+.hero-art .town-scene { height: 84px; }
+@media (min-width: 900px) {
+  .hero.hero-town { grid-template-columns: 1fr 360px; align-items: end; margin-top: 18px; }
+  .hero-town .hero-copy { padding: 22px 28px; align-self: center; }
+  .hero-town h1 { font-size: 30px; }
+  .hero-town .hero-copy > p:last-child { display: block; font-size: 15px; margin-top: 6px; }
+  .hero-art .town-scene { height: 120px; }
+}
+/* 휴대폰: 글은 왼쪽, 그림(두 사람과 노트북)은 오른쪽 작은 칸 */
+@media (max-width: 899px) {
+  .hero.hero-town { grid-template-columns: 1fr 124px; align-items: stretch; }
+  .hero-town .hero-copy { padding: 14px 4px 14px 16px; align-self: center; }
+  .hero-town h1 { font-size: 22px; }
+  .hero-town h1 br { display: inline; }
+  .hero-art { align-self: end; }
+  .hero-art .town-scene { height: 96px; width: 124px; }
+}
