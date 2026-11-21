@@ -438,3 +438,5 @@ input[type=radio]:focus-visible, input[type=checkbox]:focus-visible { outline: 3
 .privacy-notice .consent-row, .auth-card .consent-row { display: flex !important; align-items: flex-start; gap: 10px; padding: 12px 14px; margin: 10px 0 6px; min-height: 0; }
 .privacy-notice ul { margin: 8px 0; padding-left: 18px; }
 .privacy-notice .policy-link { display: inline-block; margin-top: 2px; }
+/* 휴대폰: 수준 단추는 한 줄에 하나씩 (설명이 꺾이지 않게) */
+@media (max-width: 600px) { [data-group="현재 수준"] .choice.has-hint { flex-basis: 100%; display: flex; align-items: baseline; gap: 10px; min-height: 52px; } [data-group="현재 수준"] .choice.has-hint small { font-size: 14px; } }
