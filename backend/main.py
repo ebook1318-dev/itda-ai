@@ -507,26 +507,35 @@ def restore_default_candidates(conn):
 LOCKED_PREFIX = "locked$"  # 비밀번호 설정 전이라 잠가 둔 예시 멘토 계정 (어떤 비밀번호로도 로그인 안 됨)
 def demo_mentor_hash():
     return hash_password(DEMO_MENTOR_PASSWORD) if DEMO_MENTOR_PASSWORD else LOCKED_PREFIX + secrets.token_urlsafe(24)
-# 예전에 공개 코드에 적혀 있던 예시 멘토 비밀번호(이미 노출됨). 아직 이 비밀번호를 쓰는 계정만 찾아서
-# 새 비밀번호(DEMO_MENTOR_PASSWORD, 없으면 로그인 불가 임의값)로 바꿉니다. 직접 비밀번호를 바꾼 계정은 건드리지 않아요.
-LEAKED_DEMO_PASSWORDS = {
-    "챗지피티쌤": "itda2026", "영상노트": "itda2026", "캔바장인": "itda2026", "자소서멘토": "itda2026", "자막요정": "itda2026",
-    "박지은": "wldms2026", "이수현": "soohyun01", "정하늘": "skyhaneul1", "최은비": "eunbi2026", "한도윤": "doyoon0812", "윤서아": "seoah2026a",
+# 예전에 공개 코드에 적혀 있던 예시 멘토 비밀번호(이미 노출됨). 비밀번호 글자는 코드에 두지 않고,
+# 비밀번호와 같은 방식(PBKDF2)으로 바꾼 값만 둡니다. 누군가 이 옛 비밀번호로 로그인하면 거절하고,
+# 그 계정 비밀번호를 서버 비밀 설정(DEMO_MENTOR_PASSWORD, 없으면 로그인 불가 임의값)으로 바꿉니다.
+LEAKED_DEMO_PASSWORD_HASHES = {
+    "챗지피티쌤": "pbkdf2_sha256$200000$e/P7viv1aBAHzKEmGvMqCA==$iimyqxAGdSJxw+m6xkz2FjUjMETISySYMceROjhcDME=",
+    "영상노트": "pbkdf2_sha256$200000$SRoijcwD7h8Y7EKjUFJgKg==$S/eSicypRWpDdTfS8nE5O0MeUZyeCXAq8A0YwpeDqYU=",
+    "캔바장인": "pbkdf2_sha256$200000$ThlPHfKqr9Gx7VrxLp0SKw==$7jItuVEJjWn9ICvrUCRn6E14c1wBHLgpWitm/ZZsRwQ=",
+    "자소서멘토": "pbkdf2_sha256$200000$3tjRuH9HDBkiPs66omcRcw==$sPC001UZSWhE3E6EGKSyRDHnXguynclTmfyvjadxzM8=",
+    "자막요정": "pbkdf2_sha256$200000$8CPGscoQwdn2tytGzEeKug==$SRn25SBk+TSMsPtmD7FPTT0Iv51nXZ/Egfmb8o3Y2c0=",
+    "박지은": "pbkdf2_sha256$200000$3WNhjzAewnNyhHhPV2fVsw==$0WgLd36OAIIdsU3g+JkUodkt9Ocet02h58IfErrNMAs=",
+    "이수현": "pbkdf2_sha256$200000$5pAi0+t8EiNSR+G/tS2Xhw==$86fSUl5kNcgPbUF9hnKfYYf7Nkpx2kV+d1dFVUiIvKs=",
+    "정하늘": "pbkdf2_sha256$200000$EdNyqWXr6Q4XdAAHPqmQ+w==$IZfsMsr3ewxY9YXUJzwx+Rm8ZQBSZjl7psLrjHwzhQE=",
+    "최은비": "pbkdf2_sha256$200000$9XlqIJc/iY7WStQSI2fT5w==$oQ3S/usKDgR+s/qtkl1dxZROcv2jWJRPVl238n06a04=",
+    "한도윤": "pbkdf2_sha256$200000$H+iAj4Gbn1ifeaJsZRYhoA==$8BFD+J64kw/a/JGmx8ZwXC+s8wPIbMgDVjGTDivNuuI=",
+    "윤서아": "pbkdf2_sha256$200000$g1fOpvhOjSpgDLGkAKrDRA==$PLtEesOw8HtqGw21ToYZcpdKg7d9AxKzd4X0EqHffGY=",
 }
+def is_leaked_demo_password(nickname: str, password: str) -> bool:
+    stored = LEAKED_DEMO_PASSWORD_HASHES.get(nickname)
+    return bool(stored) and verify_password(password, stored)[0]
 def rotate_leaked_demo_passwords(conn):
-    rows = conn.execute("SELECT id, nickname, password_hash, role FROM users WHERE role='mentor' AND withdrawn_at IS NULL").fetchall()
-    changed = []
-    for row in rows:
-        old = LEAKED_DEMO_PASSWORDS.get(row["nickname"])
-        if not old:
-            continue
-        stored = row["password_hash"] or ""
-        # 잠가 둔 계정은 비밀번호가 설정된 서버에서 풀어 줍니다 (Render·네이버가 같은 DB를 쓰므로).
-        if (stored.startswith(LOCKED_PREFIX) and DEMO_MENTOR_PASSWORD) or verify_password(old, stored)[0]:
-            changed.append(("UPDATE users SET password_hash=? WHERE id=?", (demo_mentor_hash(), row["id"])))
+    """잠가 둔 예시 멘토 계정을, 비밀번호가 설정된 서버에서 풀어 줍니다 (Render·네이버가 같은 DB를 쓰므로)."""
+    if not DEMO_MENTOR_PASSWORD:
+        return
+    rows = conn.execute("SELECT id, nickname, password_hash FROM users WHERE role='mentor' AND withdrawn_at IS NULL").fetchall()
+    changed = [("UPDATE users SET password_hash=? WHERE id=?", (demo_mentor_hash(), row["id"])) for row in rows
+               if row["nickname"] in LEAKED_DEMO_PASSWORD_HASHES and (row["password_hash"] or "").startswith(LOCKED_PREFIX)]
     if changed:
         run_batch(conn, changed)
-        print(f"[보안] 공개됐던 예시 멘토 비밀번호 {len(changed)}개를 바꿨습니다.")
+        print(f"[보안] 잠가 둔 예시 멘토 계정 {len(changed)}개를 서버 비밀번호로 풀었습니다.")
 def init_db():
     with get_db() as conn:
         conn.executescript("""
@@ -1544,6 +1553,11 @@ def login(data: LoginInput):
             raise HTTPException(429, f"비밀번호를 {LOGIN_MAX_FAILS}번 틀려서 로그인을 잠시 막아 두었어요. {minutes}분 뒤에 다시 시도하거나, 아래 '비밀번호 찾기'로 새 비밀번호를 만들어 주세요.")
         row = conn.execute("SELECT * FROM users WHERE nickname_key=? AND role=? AND withdrawn_at IS NULL", (nickname_key, data.role)).fetchone()
         ok, needs_upgrade = verify_password(data.password, row["password_hash"]) if row else (False, False)
+        if ok and row["role"] == "mentor" and is_leaked_demo_password(row["nickname"], data.password):
+            # 공개됐던 옛 비밀번호로는 로그인할 수 없게 하고, 그 자리에서 비밀번호를 바꿔 둡니다.
+            conn.execute("UPDATE users SET password_hash=? WHERE id=?", (demo_mentor_hash(), row["id"]))
+            print(f"[보안] 공개됐던 옛 비밀번호로 로그인 시도 → 계정 {row['id']} 비밀번호를 바꿨습니다.", flush=True)
+            ok, needs_upgrade = False, False
         if not ok:
             other = conn.execute("SELECT * FROM users WHERE nickname_key=? AND role<>? AND withdrawn_at IS NULL", (nickname_key, data.role)).fetchone()
             if other and verify_password(data.password, other["password_hash"])[0]:
