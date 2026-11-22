@@ -2014,8 +2014,9 @@ def mentor_reviews(user_id: int, me: dict = Depends(current_user)):
         rows = conn.execute("""SELECT r.id, r.content, r.rating, r.revisit, r.tags, r.created_at, '익명 수강생' AS learner_name
             FROM reviews r WHERE r.candidate_id=? AND COALESCE(r.hidden,0)=0 ORDER BY r.id DESC""", (mentor["id"],)).fetchall()
     return [{**dict(row), "tags": as_list(row["tags"] or "")} for row in rows]
-# ── 운영팀 문의: 화면에는 "메일로 보내 주세요" 문구와 주소만. 주소는 서버 설정 CONTACT_EMAIL (비우면 '준비 중') ──
-CONTACT_EMAIL = (os.environ.get("CONTACT_EMAIL") or "").strip()
+# ── 운영팀 문의: 화면에는 "메일로 보내 주세요" 문구와 주소만. 주소는 서버 설정 CONTACT_EMAIL (비우면 팀 공식 메일) ──
+DEFAULT_CONTACT_EMAIL = "itda.ai.official@gmail.com"  # 팀 공식 메일 (서버 설정 CONTACT_EMAIL이 있으면 그 값 우선)
+CONTACT_EMAIL = (os.environ.get("CONTACT_EMAIL") or DEFAULT_CONTACT_EMAIL).strip()
 @app.get("/api/config")
 def public_config():
     return {"contact_email": CONTACT_EMAIL}

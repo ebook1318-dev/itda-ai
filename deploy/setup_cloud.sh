@@ -101,7 +101,7 @@ if ! grep -q '^DEMO_MENTOR_PASSWORD=' "$ENV_FILE"; then
   ok "예시 멘토 비밀번호 저장"
 fi
 if ! grep -q '^CONTACT_EMAIL=' "$ENV_FILE"; then
-  # 운영팀 문의 화면에 보여줄 메일 주소 (나중에 이 줄에 주소를 넣고 systemctl restart itda-ai)
+  # 운영팀 문의 화면에 보여줄 메일 주소. 비워 두면 팀 공식 메일(itda.ai.official@gmail.com)을 씁니다
   echo "CONTACT_EMAIL=" >> "$ENV_FILE"
 fi
 if ! grep -q '^TEAM_NOTIFY_EMAIL=' "$ENV_FILE"; then
