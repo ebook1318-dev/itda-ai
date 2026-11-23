@@ -163,6 +163,19 @@ def naver_map_url(query):
     return "https://map.naver.com/p/search/" + urllib.parse.quote(query)
 EXTRA_SPACES = [
     # name, 동, 주소, 종류, 가능 시간, 운영시간, 이용 방법, fee_type, fee_note, 링크
+    # 11/23 무료 공간 다시 찾기: 대관 규칙에 '과외·교습 불가'나 '최소 4인'이 없고, 2명이 쓸 수 있는 곳만 (규칙 원문 확인)
+    ("천안박물관 아카이브실 세미나실", "삼룡동", "충청남도 천안시 동남구 천안삼거리길 27", "공립 박물관 2층 아카이브실 안 세미나실 · 최소 인원 없음(최대 13명)",
+     "평일 오전,평일 오후,주말 오전,주말 오후", "화~일 10:00~17:00 (월요일·1월 1일·설·추석 당일 휴관)",
+     "세미나실1·2는 예약 없이 이용 · 세미나실3은 천안시 통합예약에서 신청 후 박물관 승인 · 사용 뒤 자리 정돈",
+     "free", "무료", "https://www.cheonan.go.kr/prog/yeyakFclt/yeyak/sub04_01/view.do?fcltNo=235"),
+    ("신방도서관 미디어 창작공간 (스튜디오·편집실)", "신방동", "충남 천안시 동남구 통정4로 57", "공공도서관 미디어 창작공간 · 1~2명 · 영상 편집 실습용 PC",
+     "평일 오전,평일 오후,주말 오전,주말 오후", "1회차 10:00~13:00 · 2회차 14:00~17:00 (둘째·넷째 월요일·공휴일 휴관)",
+     "천안시 통합예약에서 신청 · 2명이면 1명으로 신청하고 기타란에 두 사람 이름 적기 · 작업 파일은 퇴실 전 삭제(USB 지참)",
+     "free", "공공도서관 시설 · 요금 안내 없음 (예약 페이지에서 확인)", "https://www.cheonan.go.kr/prog/yeyakFclt/yeyak/sub04_01/view.do?fcltNo=193"),
+    ("천안NGO센터 작은회의실", "두정동", "충청남도 천안시 서북구 늘푸른3길 55, 2층", "공익활동지원센터 · 작은회의실(10인 이내) · '공익활동을 위한 소모임 학습' 공간",
+     "평일 오전,평일 오후", "주중 이용 · 한 달에 4번까지",
+     "센터에 대관 신청 · 무료 재능 나눔 학습인지 센터와 먼저 협의 · 사전 답사 필수 · 종교·정치·영리 목적은 안 됨",
+     "free", "무료", "https://ngo-center.or.kr/060101/content/spaceInfo/"),
     # 유료 공간은 '스터디카페·스터디센터·회의실'처럼 공부하는 곳이면서, 스터디룸·회의실이 있어 대화하며 배울 수 있는 곳만 넣어요.
     # 일반 카페는 넣지 않아요. (요금·운영시간은 바뀔 수 있어 매장에서 직접 확인)
     ("네이처스터디카페 천안불당점", "불당동", "충청남도 천안시 서북구 검은들3길 42", "스터디카페 · 스터디룸(대화 가능)",
@@ -188,6 +201,8 @@ EXTRA_SPACES = [
      "paid", FEE_ROOM, naver_map_url("천안 신방동 로그인 스터디카페")),
 ]
 # 11/22: 대관 가능 여부를 확인하지 못한 공간도 빼요 (확인되면 다시 넣기)
+# 이 도구를 배울 때만 추천하는 공간 (장비가 그 용도라서)
+SPACE_ONLY_FOR_TOOLS = {"신방도서관 미디어 창작공간 (스튜디오·편집실)": {"캡컷"}}
 RETIRED_EXTRA_SPACES = ("천안중앙도서관 러닝커먼스", "천안NGO센터 교류실·작은회의실", "불당동 행정복지센터 주민자치센터", "백석동 행정복지센터 주민자치센터", "쌍용2동 행정복지센터 주민자치센터", "쌍용3동 행정복지센터 주민자치센터", "성정1동 행정복지센터 주민자치센터", "부성1동 행정복지센터 주민자치센터",
     "디오스퀘어", "비브레이브 천안점", "카페 마젠타", "카페 코발트", "인트로", "이디야커피 천안직산점", "카페 삼룡동", "프리퍼팩토리", "화진담")
 def restore_extra_spaces(conn):
@@ -1675,7 +1690,8 @@ def recommendations(request: RecommendationRequest):
         cursor = conn.execute("INSERT INTO recommendation_requests (tool,course_name,level,device,region,time_slot) VALUES (?,?,?,?,?,?)", (request.tool, request.course_name, request.level, ",".join(request.devices), ",".join(request.neighborhoods), ",".join(request.time_slots)))
         rows = conn.execute("SELECT * FROM candidates").fetchall()
     mentor_rows = [row for row in rows if row["kind"] == "mentor" and row["verification_status"] == "verified"]
-    space_rows = [row for row in rows if row["kind"] == "space" and row["name"] not in EXCLUDED_SPACE_NAMES]
+    space_rows = [row for row in rows if row["kind"] == "space" and row["name"] not in EXCLUDED_SPACE_NAMES
+                  and (row["name"] not in SPACE_ONLY_FOR_TOOLS or request.tool in SPACE_ONLY_FOR_TOOLS[row["name"]])]
     # 공간: 기기·시간·동 점수로 상위 3곳 (공간은 '무엇을 배우나'보다 '어디서 할 수 있나'라서 규칙으로 고름)
     spaces = [candidate_item(row, request) for row in space_rows]
     # 점수가 같으면 수강생이 고른 동에서 가까운 곳부터. 조건에 맞는 곳이 3곳보다 적으면 가까운 순으로 채웁니다.
