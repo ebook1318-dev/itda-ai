@@ -460,3 +460,5 @@ input[type=radio]:focus-visible, input[type=checkbox]:focus-visible { outline: 3
 .district-head h3 { margin: 0; }
 .district-head .select-all { margin: 0; }
 .copy-all { width: 100%; min-height: 48px; margin-top: 6px; }
+.space-mode-tabs { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+.free-space-note { margin: -4px 0 12px; font-size: 15px; }
