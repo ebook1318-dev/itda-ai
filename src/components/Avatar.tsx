@@ -1,3 +1,3 @@
-// 멘토·수강생 아바타: 사진 대신 닉네임 첫 글자 (색은 닉네임으로 고정)
+// 멘토·수강생 아바타: 사진 대신 별명 첫 글자 (색은 별명으로 고정)
 const AVATAR_COLORS = [['#FFE1CC', '#8A3413'], ['#E3F0E8', '#1F5A42'], ['#DCE8F7', '#1F4E86'], ['#F4E1F0', '#7A2F66'], ['#FFF0C2', '#6B4E00'], ['#E9E4DA', '#4A4136']]
 export default function Avatar({ name, size = 44 }: { name: string; size?: number }) { const i = Array.from(name || '?').reduce((a, c) => a + c.charCodeAt(0), 0) % AVATAR_COLORS.length; const [bg, fg] = AVATAR_COLORS[i]; return <span className="avatar" aria-hidden="true" style={{ width: size, height: size, background: bg, color: fg, fontSize: Math.round(size * 0.44) }}>{Array.from(name || '?')[0]}</span> }

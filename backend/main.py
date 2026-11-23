@@ -160,9 +160,6 @@ def naver_map_url(query):
     return "https://map.naver.com/p/search/" + urllib.parse.quote(query)
 EXTRA_SPACES = [
     # name, 동, 주소, 종류, 가능 시간, 운영시간, 이용 방법, fee_type, fee_note, 링크
-    ("천안중앙도서관 러닝커먼스", "원성동", "충청남도 천안시 동남구 중앙로 118", "공공도서관 1층 학습 공유 공간",
-     ALL_WEEK, "매일 08:00~22:00 (매월 둘째·넷째 월요일·공휴일 휴관)", "예약 없이 이용하는 열린 학습 공간 · 이용 전 도서관 공식 안내 확인",
-     "free", "무료", "https://www.cheonan.go.kr/lib.do"),
     # 유료 공간은 '스터디카페·스터디센터·회의실'처럼 공부하는 곳이면서, 스터디룸·회의실이 있어 대화하며 배울 수 있는 곳만 넣어요.
     # 일반 카페는 넣지 않아요. (요금·운영시간은 바뀔 수 있어 매장에서 직접 확인)
     ("네이처스터디카페 천안불당점", "불당동", "충청남도 천안시 서북구 검은들3길 42", "스터디카페 · 스터디룸(대화 가능)",
@@ -188,7 +185,7 @@ EXTRA_SPACES = [
      "paid", FEE_ROOM, naver_map_url("천안 신방동 로그인 스터디카페")),
 ]
 # 11/22: 대관 가능 여부를 확인하지 못한 공간도 빼요 (확인되면 다시 넣기)
-RETIRED_EXTRA_SPACES = ("천안NGO센터 교류실·작은회의실", "불당동 행정복지센터 주민자치센터", "백석동 행정복지센터 주민자치센터", "쌍용2동 행정복지센터 주민자치센터", "쌍용3동 행정복지센터 주민자치센터", "성정1동 행정복지센터 주민자치센터", "부성1동 행정복지센터 주민자치센터",
+RETIRED_EXTRA_SPACES = ("천안중앙도서관 러닝커먼스", "천안NGO센터 교류실·작은회의실", "불당동 행정복지센터 주민자치센터", "백석동 행정복지센터 주민자치센터", "쌍용2동 행정복지센터 주민자치센터", "쌍용3동 행정복지센터 주민자치센터", "성정1동 행정복지센터 주민자치센터", "부성1동 행정복지센터 주민자치센터",
     "디오스퀘어", "비브레이브 천안점", "카페 마젠타", "카페 코발트", "인트로", "이디야커피 천안직산점", "카페 삼룡동", "프리퍼팩토리", "화진담")
 def restore_extra_spaces(conn):
     """추가 공간을 넣거나 기본 정보를 맞춥니다. 요금 설명(fee_note)은 팀이 고쳤을 수 있어 새로 넣을 때만 채워요."""
@@ -457,7 +454,7 @@ def restore_default_candidates(conn):
     # 데모가 항상 작동하도록, 실제로 가입했던 멘토 5명의 정보(2026-11-03 기준 실제 입력값)를
     # 공간 데이터와 같은 방식으로 코드에 고정해 둡니다. 비밀번호는 코드에 쓰지 않고(공개 저장소)
     # 서버 비밀 설정 DEMO_MENTOR_PASSWORD 값을 씁니다. 값이 없으면 아무도 로그인할 수 없는 임의 비밀번호가 들어가요.
-    # 멘토가 같은 닉네임으로 직접 재가입하면(비밀번호를 직접 정하면) 그 계정을 그대로 쓰고
+    # 멘토가 같은 별명으로 직접 재가입하면(비밀번호를 직접 정하면) 그 계정을 그대로 쓰고
     # 확인(verified) 상태만 자동으로 맞춰줍니다.
     # 소개글은 각 멘토의 '등록된 주제'만 바탕으로 작성했습니다.
     # (AI 추천 정확도 테스트 문장의 표현은 일부러 쓰지 않아, 테스트가 공정하도록 했습니다.)
@@ -1137,7 +1134,7 @@ def parse_json_object(text: str):
 
 def _mentor_for_prompt(item):
     return {
-        "id": item["id"], "닉네임": item["name"], "도구": item["tools"], "가르칠 수 있는 수준": item["levels"],
+        "id": item["id"], "별명": item["name"], "도구": item["tools"], "가르칠 수 있는 수준": item["levels"],
         "주제": item["topics"], "소개글": item["intro"], "기기": item["devices"], "가능 시간": item["times"], "동": item["neighborhoods"],
     }
 
@@ -1493,9 +1490,9 @@ def signup(data: AuthInput, background: BackgroundTasks):
     nickname = " ".join(data.nickname.strip().split())
     nickname_key = normalize_nickname(nickname)
     if len(nickname) < 2 or len(data.password) < 8 or data.role not in ("learner", "mentor"):
-        raise HTTPException(400, "닉네임·비밀번호·역할을 다시 확인해 주세요. 비밀번호는 8자리 이상이어야 합니다.")
+        raise HTTPException(400, "별명·비밀번호·역할을 다시 확인해 주세요. 비밀번호는 8자리 이상이어야 합니다.")
     if nickname.startswith(WITHDRAWN_PREFIX):
-        raise HTTPException(400, "사용할 수 없는 닉네임입니다.")
+        raise HTTPException(400, "사용할 수 없는 별명입니다.")
     email = data.email.strip().lower()
     if not EMAIL_PATTERN.fullmatch(email) or len(email) > 254:
         raise HTTPException(400, "알림을 받을 이메일 주소를 정확히 입력해 주세요.")
@@ -1509,14 +1506,14 @@ def signup(data: AuthInput, background: BackgroundTasks):
             cursor = conn.execute("INSERT INTO users (nickname,nickname_key,password_hash,role,mentor_verification_status,mentor_consent_confirmed,email,privacy_consent_at) VALUES (?,?,?,?,?,?,?,?)", (nickname, nickname_key, hash_password(data.password), data.role, 'pending' if data.role == 'mentor' else 'not_applicable', 0, email, time.strftime("%Y-%m-%d %H:%M:%S")))
             row = conn.execute("SELECT * FROM users WHERE id=?", (cursor.lastrowid,)).fetchone()
         except sqlite3.IntegrityError:
-            raise HTTPException(409, "이미 사용 중인 닉네임입니다.")
+            raise HTTPException(409, "이미 사용 중인 별명입니다.")
         if mail_enabled():
             issue_email_code(conn, row, background)
         return logged_in(conn, row)
 @app.post("/api/account/withdraw")
 def withdraw(data: WithdrawInput, me: dict = Depends(current_user)):
     same_user(me, data.user_id)
-    """회원 탈퇴: 이메일·비밀번호는 즉시 삭제하고 닉네임은 익명으로 바꿉니다.
+    """회원 탈퇴: 이메일·비밀번호는 즉시 삭제하고 별명은 익명으로 바꿉니다.
     요청·후기·쪽지 기록은 상대방 화면에서 갑자기 사라지지 않도록 '탈퇴한 회원'으로 남깁니다."""
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE id=? AND withdrawn_at IS NULL", (data.user_id,)).fetchone()
@@ -1563,7 +1560,7 @@ def login(data: LoginInput):
             if other and verify_password(data.password, other["password_hash"])[0]:
                 # 비밀번호는 맞는데 역할만 다른 경우 (자주 하는 실수) — 실패로 세지 않고 알려줌
                 role_label = "멘토" if other["role"] == "mentor" else "수강생"
-                raise HTTPException(401, f"이 닉네임은 '{role_label}'(으)로 가입되어 있어요. 이용 역할을 '{role_label}'(으)로 바꿔서 다시 로그인해 주세요.")
+                raise HTTPException(401, f"이 별명은 '{role_label}'(으)로 가입되어 있어요. 이용 역할을 '{role_label}'(으)로 바꿔서 다시 로그인해 주세요.")
             fails = (attempt["fails"] if attempt else 0) + 1
             failed = fails
         else:
@@ -1578,7 +1575,7 @@ def login(data: LoginInput):
                          429, f"비밀번호를 {LOGIN_MAX_FAILS}번 틀려서 {LOGIN_LOCK_SECONDS // 60}분 동안 로그인을 막아 두었어요. 기억나지 않으면 아래 '비밀번호 찾기'로 새 비밀번호를 만들어 주세요.")
     left = LOGIN_MAX_FAILS - failed
     record_then_fail("INSERT OR REPLACE INTO login_attempts (nickname_key, fails, locked_until) VALUES (?,?,NULL)", (nickname_key, failed),
-                     401, f"닉네임·비밀번호·역할 중 맞지 않는 것이 있어요. ({left}번 더 틀리면 {LOGIN_LOCK_SECONDS // 60}분 동안 로그인할 수 없어요)")
+                     401, f"별명·비밀번호·역할 중 맞지 않는 것이 있어요. ({left}번 더 틀리면 {LOGIN_LOCK_SECONDS // 60}분 동안 로그인할 수 없어요)")
 @app.post("/api/auth/logout")
 def logout(authorization: str | None = Header(default=None)):
     token = (authorization or "").removeprefix("Bearer ").strip()
@@ -1589,7 +1586,7 @@ def logout(authorization: str | None = Header(default=None)):
 @app.get("/api/auth/me")
 def auth_me(me: dict = Depends(current_user)):
     return public_user(me)
-# ── 계정 찾기: 닉네임 찾기 · 비밀번호 재설정 ────────────────────────────────
+# ── 계정 찾기: 별명 찾기 · 비밀번호 재설정 ────────────────────────────────
 class FindNicknameInput(BaseModel):
     email: str
 class ResetCodeInput(BaseModel):
@@ -1619,7 +1616,7 @@ def find_nickname(data: FindNicknameInput, background: BackgroundTasks):
         rows = conn.execute("SELECT nickname, role FROM users WHERE email=? AND withdrawn_at IS NULL", (email,)).fetchall()
     if rows:  # 가입 여부를 알려주지 않으려고, 계정이 없어도 화면 안내는 똑같이 보여줍니다.
         lines = "\n".join(f"- {'멘토' if r['role'] == 'mentor' else '수강생'}: {r['nickname']}" for r in rows)
-        background.add_task(send_mail, email, "[배움잇다 AI] 닉네임 안내",
+        background.add_task(send_mail, email, "[배움잇다 AI] 별명 안내",
                             f"이 이메일로 가입된 배움잇다 AI 계정입니다.\n\n{lines}\n\n본인이 요청하지 않았다면 이 메일은 무시하셔도 됩니다." + MAIL_FOOTER)
     return {"ok": True, "message": RECOVERY_SENT_MESSAGE}
 @app.post("/api/auth/reset/send-code")
@@ -1628,7 +1625,7 @@ def reset_send_code(data: ResetCodeInput, background: BackgroundTasks):
         raise HTTPException(503, "메일 기능을 준비하고 있어요. 운영팀에 문의해 주세요.")
     key = normalize_nickname(data.nickname)
     if not key:
-        raise HTTPException(400, "닉네임을 입력해 주세요.")
+        raise HTTPException(400, "별명을 입력해 주세요.")
     rate_limit("recovery", 5, 600, "계정 찾기를 너무 많이 요청했어요.")
     recovery_throttle("reset:" + key)
     with get_db() as conn:
@@ -2010,7 +2007,7 @@ def mentor_reviews(user_id: int, me: dict = Depends(current_user)):
         mentor = conn.execute("SELECT id FROM candidates WHERE mentor_user_id=? AND kind='mentor'", (user_id,)).fetchone()
         if not mentor:
             return []
-        # 솔직한 후기를 위해 멘토에게는 수강생 닉네임을 보여주지 않습니다(익명). 운영팀이 숨긴 후기는 빼요.
+        # 솔직한 후기를 위해 멘토에게는 수강생 별명을 보여주지 않습니다(익명). 운영팀이 숨긴 후기는 빼요.
         rows = conn.execute("""SELECT r.id, r.content, r.rating, r.revisit, r.tags, r.created_at, '익명 수강생' AS learner_name
             FROM reviews r WHERE r.candidate_id=? AND COALESCE(r.hidden,0)=0 ORDER BY r.id DESC""", (mentor["id"],)).fetchall()
     return [{**dict(row), "tags": as_list(row["tags"] or "")} for row in rows]
