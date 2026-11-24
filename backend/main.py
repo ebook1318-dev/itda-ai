@@ -1107,8 +1107,8 @@ def candidate_item(row, request=None):
 ANTHROPIC_API_KEY = (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("AI_API_KEY") or "").strip()
 ANTHROPIC_MODEL = (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-5-5").strip()
 AI_GATEWAY_URL = (os.environ.get("AI_GATEWAY_URL") or "https://gateway.aitestbed.kr/v1").strip().rstrip("/")
-AI_TIMEOUT_SECONDS = 15
-AI_MAX_MENTOR_POOL = 10  # AI에게 보내는 멘토 후보 최대 수 (비용·속도 제한)
+AI_TIMEOUT_SECONDS = 30  # 11/24: 멘토가 늘어 15초를 넘기는 경우가 있어 늘림 (화면은 3단계 로딩으로 안내)
+AI_MAX_MENTOR_POOL = 6  # AI에게 보내는 멘토 후보 최대 수 (비용·속도 제한, 11/24: 10→6)
 
 class AIError(Exception):
     pass
@@ -1219,7 +1219,7 @@ def build_matching_prompt(request, mentors, spaces):
 {{"mentors": [{{"id": 멘토id, "reason": "추천 이유 한 문장"}}], "spaces": [{{"id": 공간id, "reason": "추천 이유 한 문장"}}]}}
 - "mentors"에는 위 멘토를 모두 한 번씩, 가장 잘 맞는 순서대로 넣으세요.
 - "spaces"에는 위 공간을 모두 한 번씩 넣으세요 (순서는 그대로).
-- 추천 이유는 수강생에게 말하듯 친근한 한국어 한 문장으로, 내용이 맞는 점과 (있다면) 시간·동이 맞는 점을 함께 쓰세요.
+- 추천 이유는 수강생에게 말하듯 친근한 한국어 한 문장으로, 내용이 맞는 점과 (있다면) 시간·동이 맞는 점을 함께 쓰세요. 한 문장은 50자 안팎으로 짧게 쓰세요.
 - 수강생이 고르지 않은 조건(사용 기기·가능 시간·가능한 동이 빈 목록)은 '맞는다', '만나기 좋다'고 쓰지 마세요.
   멘토 정보로만 알려줄 때는 "이 멘토님은 평일 저녁에 활동해요"처럼 멘토의 정보라는 것이 드러나게 쓰세요.
 - 수강생이 고른 도구와 멘토의 도구가 다르지만 둘 다 ChatGPT·Gemini·Claude 중 하나라면, 추천 이유에
@@ -1233,7 +1233,7 @@ def same_tool(item, request):
     # ChatGPT·Gemini·Claude끼리는 쓰는 방법이 같아 함께 추천합니다 (점수는 같은 도구보다 1점 낮음)
     return request.tool in CHAT_AI_TOOLS and any(t in CHAT_AI_TOOLS for t in item["tools"])
 
-def rank_mentors(mentor_items, request, use_ai=True, spaces=None):
+def rank_mentors(mentor_items, request, use_ai=True, spaces=None, ignore_skip=False):
     """멘토 순위를 정합니다. 반환: (정렬된 멘토 목록, AI 사용 여부, 실패 사유)
     spaces를 주면 같은 AI 호출에서 공간 추천 이유도 함께 채웁니다."""
     spaces = spaces or []
@@ -1243,7 +1243,7 @@ def rank_mentors(mentor_items, request, use_ai=True, spaces=None):
     others = by_score([m for m in mentor_items if not same_tool(m, request)])
     if not use_ai or not ANTHROPIC_API_KEY or (not matched and not spaces):
         return matched + others, False, (None if use_ai and ANTHROPIC_API_KEY else "AI 미사용")
-    if ai_temporarily_skipped():
+    if not ignore_skip and ai_temporarily_skipped():
         return matched + others, False, "최근 AI 연결 실패로 5분간 규칙 추천 사용 중"
     pool = matched[:AI_MAX_MENTOR_POOL]
     rest = matched[AI_MAX_MENTOR_POOL:]
@@ -2268,7 +2268,7 @@ def team_accuracy_test(x_team_password: str | None = Header(default=None)):
         req = RecommendationRequest(tool=tool, level="입문", devices=[], time_slots=[], neighborhoods=[], keyword=sentence)
         rule_ranked, _, _ = rank_mentors([candidate_item(r, req) for r in mentor_rows], req, use_ai=False)
         started = time.time()
-        ai_ranked, ai_used, ai_error = rank_mentors([candidate_item(r, req) for r in mentor_rows], req, use_ai=True)
+        ai_ranked, ai_used, ai_error = rank_mentors([candidate_item(r, req) for r in mentor_rows], req, use_ai=True, ignore_skip=True)
         elapsed = round((time.time() - started) * 1000)
         rule_top = rule_ranked[0]["name"] if rule_ranked else None
         ai_top = ai_ranked[0]["name"] if ai_ranked and ai_used else None
